@@ -1,0 +1,21 @@
+# dicomq — qmail-inspired DICOM store-and-forward suite. See DESIGN.md.
+# All programs are stubs while the design settles; no install rules yet.
+
+add_library(dicomq-common STATIC
+  src/common/spool.cc
+  src/common/envelope.cc
+  src/common/profile.cc
+)
+target_include_directories(dicomq-common PUBLIC src)
+target_compile_features(dicomq-common PUBLIC cxx_std_17)
+
+foreach(prog recv send local remote clean inject)
+  add_executable(dicomq-${prog} src/${prog}/main.cc)
+  target_link_libraries(dicomq-${prog} PRIVATE dicomq-common)
+endforeach()
+
+# Only the edge programs speak DICOM; the queue core must stay free of
+# DCMTK so it can be tested without it.
+target_link_libraries(dicomq-recv PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
+target_link_libraries(dicomq-remote PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
+target_link_libraries(dicomq-inject PRIVATE DCMTK::dcmdata)

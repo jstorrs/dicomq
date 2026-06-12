@@ -4,6 +4,11 @@
 Storage Service Class Provider) with a Maildir/qmail-inspired delivery mode.
 It builds as a standalone project against an installed DCMTK.
 
+It is also the transitional home of **dicomq**, the qmail-inspired
+store-and-forward suite that will eventually replace it — see
+[dicomq/DESIGN.md](dicomq/DESIGN.md) for the architecture and
+transition plan. The dicomq programs currently build as stubs.
+
 ## The `--imagedir` delivery mode
 
 With `--imagedir`, received objects are delivered the way qmail delivers to a
