@@ -85,6 +85,48 @@ if [ -d /dev/shm ] && [ "$(stat -fc %i /dev/shm 2>/dev/null)" != "$(stat -fc %i 
   rm -rf "$XMD"
 fi
 
+# --- send: routing --------------------------------------------------------
+new_spool
+mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
+ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
+"$BIN/dicomq-send" --once 2>/dev/null
+check "send delivers to the default maildir" test -f "$DICOMQ_SPOOL/aet/ARCHIVE/new/$ID.dcm"
+check "send dequeues after delivery"        test ! -e "$DICOMQ_SPOOL/queue/todo/$ID.env"
+
+# fan-out: maildir + two forwards
+new_spool
+mkdir -p "$DICOMQ_SPOOL/aet/FAN"/{tmp,new} "$DICOMQ_SPOOL/dest"/{PACS1,PACS2} \
+         "$DICOMQ_SPOOL/route"/{PACS1,PACS2}/todo
+printf 'host: localhost\nport: 11178\naet: PACS1\n' > "$DICOMQ_SPOOL/dest/PACS1/remote"
+printf 'host: localhost\nport: 11179\naet: PACS2\n' > "$DICOMQ_SPOOL/dest/PACS2/remote"
+printf 'maildir ./ env\nforward PACS1\nforward PACS2\n' > "$DICOMQ_SPOOL/aet/FAN/deliver"
+touch "$DICOMQ_SPOOL/route/PACS1/hold" "$DICOMQ_SPOOL/route/PACS2/hold"
+ID=$("$BIN/dicomq-inject" -c FAN "$WORK/test.dcm")
+"$BIN/dicomq-send" --once 2>/dev/null
+check "fan-out delivers to the maildir"     test -f "$DICOMQ_SPOOL/aet/FAN/new/$ID.dcm"
+check "fan-out delivers the envelope"       test -f "$DICOMQ_SPOOL/aet/FAN/new/$ID.env"
+check "fan-out routes to PACS1"             test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
+check "fan-out routes to PACS2"             test -f "$DICOMQ_SPOOL/route/PACS2/todo/$ID.env"
+check "fan-out object is hardlinked 3 ways" test "$(stat -c %h "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm")" = 3
+check "fan-out dequeues from todo"          test ! -e "$DICOMQ_SPOOL/queue/todo/$ID.env"
+check "send respects hold flags (no agent spawned for held dest)" \
+      test ! -e "$DICOMQ_SPOOL/route/PACS1/status"
+
+# corrupt quarantine, unknown AET, deferral
+new_spool
+printf 'not an envelope\n' > "$DICOMQ_SPOOL/queue/todo/19990101000000000.1.000000.env"
+touch "$DICOMQ_SPOOL/queue/todo/19990101000000000.1.000000.dcm"
+ID=$("$BIN/dicomq-inject" -c NOSUCHAET "$WORK/test.dcm")
+mkdir -p "$DICOMQ_SPOOL/aet/DEFER"/{tmp,new}
+printf 'forward MISSINGDEST\n' > "$DICOMQ_SPOOL/aet/DEFER/deliver"
+ID2=$("$BIN/dicomq-inject" -c DEFER "$WORK/test.dcm")
+"$BIN/dicomq-send" --once 2>/dev/null
+check "unparseable envelope is quarantined" test -f "$DICOMQ_SPOOL/corrupt/19990101000000000.1.000000.env"
+check "quarantine keeps the object"         test -f "$DICOMQ_SPOOL/corrupt/19990101000000000.1.000000.dcm"
+check "unknown called AET is failed"        test -f "$DICOMQ_SPOOL/failed/$ID.env"
+check "failed envelope says why"            grep -q '^failed: .*unknown called AET' "$DICOMQ_SPOOL/failed/$ID.env"
+check "unsatisfiable instruction defers in place" test -f "$DICOMQ_SPOOL/queue/todo/$ID2.env"
+
 echo
 echo "$PASS passed, $FAIL failed"
 test "$FAIL" -eq 0
