@@ -140,6 +140,41 @@ Because ids are unique, every queue transition is idempotent:
 `link(2)` returning `EEXIST` means "already done", so a routing pass
 interrupted by a crash can simply run again.
 
+### Why a sidecar, not the DICOM preamble (decided 2026-06)
+
+The 128-byte preamble of a Part 10 file is application-defined and never
+transmitted (C-STORE carries the dataset; the receiver constructs the
+preamble and file meta itself), so embedding the envelope there is
+tempting — one self-describing file, one rename to commit. Rejected:
+
+- **It doesn't fit.** The three UIDs alone (SOP class, SOP instance,
+  transfer syntax) can total 192 bytes before id, timestamp, peer, and
+  AETs.
+- **The envelope is mutable and grows; the preamble is fixed and
+  shared.** Retry state appends `attempt:` lines and lives in the env
+  copy's mtime. Inside the `.dcm`, an in-place write in one route queue
+  would corrupt every hardlink of the object (and mtime is an inode
+  attribute, also shared). The only crash-safe update would be
+  copy-rewrite-rename of the whole object per attempt.
+- **Inject can't claim the preamble.** Objects also enter via
+  `dicomq-inject`, and some real files carry load-bearing preambles
+  (dual TIFF/DICOM whole-slide images embed a TIFF header there).
+  Preambles of injected files are preserved, never overwritten.
+- **Delivered files would carry queue state into archives.** A sidecar
+  can be kept or dropped by the consumer; bytes inside the object
+  cannot.
+- **Plain text is the debugging story.** `cat`/`grep` on `.env` files
+  inspects queue state with no tools; a packed preamble needs a reader.
+
+What `dicomq-recv` *does* write into the file is the standard-blessed
+in-file metadata: file meta group tags `SourceApplicationEntityTitle
+(0002,0016)`, `SendingApplicationEntityTitle (0002,0017)`, and
+`ReceivingApplicationEntityTitle (0002,0018)`, stamped at receive time.
+Delivered objects stay self-describing even if a consumer discards the
+`.env`; the sidecar remains the routing/retry vehicle because that
+state is per-queue and mutable by design. The preamble is written as
+all zeros (the "unused" form) for received objects.
+
 ## Commit protocols
 
 Every transition follows the same shape: write into `tmp/` (or link/copy
@@ -151,7 +186,8 @@ its `.env` is an orphan, invisible to consumers, reaped by
 
 **Receive** (`dicomq-recv`, per object, before the C-STORE response):
 
-1. write `queue/tmp/<id>.dcm`, fsync
+1. write `queue/tmp/<id>.dcm` — zeroed preamble, file meta stamped with
+   (0002,0016/0017/0018) — and fsync
 2. write `queue/tmp/<id>.env`, fsync
 3. rename both into `queue/todo/` (`.dcm` first, `.env` last), fsync `todo/`
 4. send C-STORE success

@@ -11,6 +11,8 @@
 //     (.env last) — the same commit protocol as dicomq-recv
 //   - the source file is copied, never moved or linked: the spool owns
 //     its objects
+//   - the source file's preamble and meta are preserved as-is (some
+//     real files carry load-bearing preambles, e.g. dual TIFF/DICOM)
 //
 // Needs dcmdata only (file meta parsing), no networking.
 
