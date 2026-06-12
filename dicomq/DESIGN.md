@@ -242,9 +242,12 @@ inspection the operator re-injects or removes it.
 **Local delivery** (`dicomq-local`): link `<id>.dcm` into
 `<dir>/new/` (`EEXIST` = already delivered = success). With the `env`
 option, the envelope is copied to `<dir>/new/<id>.env` first, so the
-object's appearance remains the commit point. Consumers must treat
-delivered files as read-only — they share an inode with the spool — but
-may move or delete them freely.
+object's appearance remains the commit point. A maildir on a different
+filesystem (link gives `EXDEV`) is delivered by copy through the
+maildir's own `tmp/` and committed by rename — which is what maildirs
+have `tmp/` for. Consumers must treat delivered files as read-only —
+they may share an inode with the spool — but may move or delete them
+freely.
 
 **Remote delivery** (`dicomq-remote <DEST>`): open one association to
 the destination, proposing presentation contexts per its `propose`

@@ -65,6 +65,26 @@ touch -d '2 days ago' "$DICOMQ_SPOOL/queue/todo/kept.dcm"
 "$BIN/dicomq-clean" >/dev/null
 check "clean keeps old committed messages" test -e "$DICOMQ_SPOOL/queue/todo/kept.dcm"
 
+# --- local ----------------------------------------------------------------
+new_spool
+mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
+ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
+MD="$DICOMQ_SPOOL/aet/ARCHIVE"
+check "local delivers the object"          "$BIN/dicomq-local" "$ID" "$MD"
+check "delivered object exists"            test -f "$MD/new/$ID.dcm"
+check "delivery is a hardlink"             test "$(stat -c %h "$MD/new/$ID.dcm")" = 2
+check "local is idempotent"                "$BIN/dicomq-local" "$ID" "$MD"
+check "local delivers the envelope on request" "$BIN/dicomq-local" "$ID" "$MD" env
+check "delivered envelope exists"          test -f "$MD/new/$ID.env"
+check_not "local refuses a missing maildir" "$BIN/dicomq-local" "$ID" "$DICOMQ_SPOOL/aet/NOWHERE"
+# cross-filesystem fallback: /dev/shm is a different fs from /tmp
+if [ -d /dev/shm ] && [ "$(stat -fc %i /dev/shm 2>/dev/null)" != "$(stat -fc %i "$WORK" 2>/dev/null)" ]; then
+  XMD=$(mktemp -d /dev/shm/dicomq-md.XXXXXX); mkdir -p "$XMD"/{tmp,new}
+  check "local copies across filesystems"  "$BIN/dicomq-local" "$ID" "$XMD"
+  check "cross-fs object delivered intact" cmp -s "$WORK/test.dcm" "$XMD/new/$ID.dcm"
+  rm -rf "$XMD"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 test "$FAIL" -eq 0
