@@ -32,8 +32,12 @@ so a consumer watching the output directory never sees a partial file:
 `<output-dir>/new/` must exist before it starts, as must any per-AET
 destination directories you want to receive into.
 
-AE titles are sanitized before use in paths (trimmed, and anything other
-than alphanumerics, `-`, and `.` replaced by `_`). Filenames are unique
+AE titles are sanitized before use in paths: trimmed, and anything other
+than alphanumerics and `-` replaced by `_` (an AET that sanitizes to the
+empty string becomes `_`). Because `.` is always replaced, the
+dot-separated filename fields are unambiguous. A Called AET that
+sanitizes to `tmp` (in any case) is never used as a destination
+directory; such deliveries fall back to `new/`. Filenames are unique
 across concurrent receivers by construction (timestamp + PID + per-process
 counter).
 

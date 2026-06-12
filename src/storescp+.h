@@ -71,11 +71,27 @@ public:
     for (size_t i = first; i < last; i++)
     {
       const unsigned char c = OFstatic_cast(unsigned char, src[i]);
-      if (isalnum(c) || (c == '-') || (c == '.'))
+      // '.' is excluded because it separates filename fields; this also
+      // prevents "." and ".." from ever naming a destination directory
+      if (isalnum(c) || (c == '-'))
         dest += OFstatic_cast(char, c);
       else
         dest += '_';
     }
+    // never produce an empty path component (or a hidden/ambiguous filename field)
+    if (dest.empty())
+      dest = "_";
+  }
+
+  OFBool
+  isReservedName(const OFString& name)
+  {
+    // the queue's own directory must never become a delivery destination;
+    // compare case-insensitively to cover case-insensitive filesystems
+    OFString lower = name;
+    for (size_t i = 0; i < lower.length(); i++)
+      lower[i] = OFstatic_cast(char, tolower(OFstatic_cast(unsigned char, lower[i])));
+    return (lower == "tmp");
   }
 
   void
@@ -84,9 +100,14 @@ public:
     setAETitle(sourceAETitle, callingTitle);
     setAETitle(targetAETitle, calledTitle);
     OFStandard::combineDirAndFilename(tmpDir,root,"tmp");
-    OFStandard::combineDirAndFilename(newDir,root,targetAETitle);
-    if (!isValidDestination(newDir))
+    if (isReservedName(targetAETitle))
       OFStandard::combineDirAndFilename(newDir,root,"new");
+    else
+    {
+      OFStandard::combineDirAndFilename(newDir,root,targetAETitle);
+      if (!isValidDestination(newDir))
+        OFStandard::combineDirAndFilename(newDir,root,"new");
+    }
   }
   
   void
@@ -94,21 +115,22 @@ public:
     // tmp/[Called AETitle].[Calling AETitle].[YYYYMMDDHHMMSSMMM].[PID].[COUNTER].[MODALITY].dcm
     // [Called AETitle]/[Calling AETitle].[YYYYMMDDHHMMSSMMM].[PID].[COUNTER].[MODALITY].dcm
 
-    char stemName[NAME_MAX] = "";
-    char fileName[NAME_MAX] = "";
+    char uniquePart[64] = "";
 
     OFDateTime dateTime;
     dateTime.setCurrentDateTime();
-    snprintf(stemName, NAME_MAX, "%04u%02u%02u%02u%02u%02u%03u.%d.%06d.%s.dcm",
+    snprintf(uniquePart, sizeof(uniquePart), "%04u%02u%02u%02u%02u%02u%03u.%ld.%06d",
 	     dateTime.getDate().getYear(), dateTime.getDate().getMonth(), dateTime.getDate().getDay(),
 	     dateTime.getTime().getHour(), dateTime.getTime().getMinute(),dateTime.getTime().getIntSecond(), dateTime.getTime().getMilliSecond(),
-	     getpid(), serialCounter++, dcmSOPClassUIDToModality(req->AffectedSOPClassUID, "UNKNOWN"));
-    
-    snprintf(fileName, NAME_MAX, "%s.%s.%s", targetAETitle.c_str(), sourceAETitle.c_str(), stemName);
-    OFStandard::combineDirAndFilename(tmpFileName,tmpDir,fileName);
+	     OFstatic_cast(long, getpid()), serialCounter++);
 
-    snprintf(fileName, NAME_MAX, "%s.%s", sourceAETitle.c_str(), stemName);
-    OFStandard::combineDirAndFilename(newFileName,newDir,fileName);
+    OFString stemName = uniquePart;
+    stemName += '.';
+    stemName += dcmSOPClassUIDToModality(req->AffectedSOPClassUID, "UNKNOWN");
+    stemName += ".dcm";
+
+    OFStandard::combineDirAndFilename(tmpFileName, tmpDir, targetAETitle + "." + sourceAETitle + "." + stemName);
+    OFStandard::combineDirAndFilename(newFileName, newDir, sourceAETitle + "." + stemName);
   }
 
   void

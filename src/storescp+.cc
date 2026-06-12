@@ -1503,6 +1503,9 @@ static OFCondition acceptAssociation(T_ASC_Network *net, DcmAssociationConfigura
     // should never happen
     callingAETitle.clear();
     calledAETitle.clear();
+
+    // reset, so a previous association's titles can never route this one's deliveries
+    ImageDir.setAETitles("","");
   }
   // store calling presentation address (i.e. remote hostname)
   callingPresentationAddress = OFSTRING_GUARD(assoc->params->DULparams.callingPresentationAddress);
