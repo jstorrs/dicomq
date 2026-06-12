@@ -6,8 +6,12 @@ It builds as a standalone project against an installed DCMTK.
 
 It is also the transitional home of **dicomq**, the qmail-inspired
 store-and-forward suite that will eventually replace it — see
-[dicomq/DESIGN.md](dicomq/DESIGN.md) for the architecture and
-transition plan. The dicomq programs currently build as stubs.
+[dicomq/DESIGN.md](dicomq/DESIGN.md) for the architecture. All eight
+programs (`dicomq-recv`, `-send`, `-local`, `-remote`, `-clean`,
+`-inject`, `-queue`, `-super`) are implemented and covered by the
+integration suite in `dicomq/test/run-tests.sh`. Known v1 limits:
+no TLS yet, compressing transcodes unsupported (decompressing ones
+work), and the queue runner polls rather than using inotify.
 
 ## The `--imagedir` delivery mode
 

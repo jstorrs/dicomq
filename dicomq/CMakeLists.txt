@@ -1,5 +1,4 @@
 # dicomq — qmail-inspired DICOM store-and-forward suite. See DESIGN.md.
-# All programs are stubs while the design settles; no install rules yet.
 
 add_library(dicomq-common STATIC
   src/common/spool.cc
@@ -21,3 +20,7 @@ target_link_libraries(dicomq-recv PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
 target_link_libraries(dicomq-remote PRIVATE DCMTK::dcmnet DCMTK::dcmtls
                                             DCMTK::dcmjpeg DCMTK::dcmjpls)
 target_link_libraries(dicomq-inject PRIVATE DCMTK::dcmdata)
+
+foreach(prog recv send local remote clean inject queue super)
+  install(TARGETS dicomq-${prog} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endforeach()

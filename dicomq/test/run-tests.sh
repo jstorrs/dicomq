@@ -266,6 +266,33 @@ else
   echo "skip - remote tests (no storescp on PATH)"
 fi
 
+# --- end to end: modality -> recv -> send -> maildir + remote -> PACS ------
+if command -v storescu >/dev/null && command -v storescp >/dev/null; then
+  RPORT=11184 PPORT=11185
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/ROUTER"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1" \
+           "$DICOMQ_SPOOL/route/PACS1/todo" "$WORK/endpacs"
+  printf "host: localhost\nport: $PPORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
+  printf 'maildir ./ env\nforward PACS1\n' > "$DICOMQ_SPOOL/aet/ROUTER/deliver"
+
+  storescp -od "$WORK/endpacs" $PPORT 2>/dev/null & SCP=$!
+  "$BIN/dicomq-recv" --listen $RPORT --once 2>/dev/null & RECV=$!
+  wait_listen $RPORT; wait_listen $PPORT
+  check "e2e: modality stores to dicomq-recv" \
+        storescu -aet CT99 -aec ROUTER localhost $RPORT "$WORK/test.dcm"
+  wait $RECV
+  "$BIN/dicomq-send" --once 2>/dev/null
+  check "e2e: maildir copy delivered"        test -n "$(ls "$DICOMQ_SPOOL/aet/ROUTER/new/" | grep '\.dcm$')"
+  check "e2e: envelope delivered beside it"  test -n "$(ls "$DICOMQ_SPOOL/aet/ROUTER/new/" | grep '\.env$')"
+  check "e2e: forwarded to the PACS"         test -n "$(ls -A "$WORK/endpacs")"
+  check "e2e: every queue drained"           test -z "$(ls -A "$DICOMQ_SPOOL/queue/todo")$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+  EENV=$(ls "$DICOMQ_SPOOL/aet/ROUTER/new/"*.env | head -1)
+  check "e2e: envelope records the modality" grep -q '^calling-aet: CT99$' "$EENV"
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+else
+  echo "skip - end-to-end test (needs storescu and storescp)"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 test "$FAIL" -eq 0
