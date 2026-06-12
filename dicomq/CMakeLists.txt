@@ -18,5 +18,6 @@ endforeach()
 # Only the edge programs speak DICOM; the queue core must stay free of
 # DCMTK so it can be tested without it.
 target_link_libraries(dicomq-recv PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
-target_link_libraries(dicomq-remote PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
+target_link_libraries(dicomq-remote PRIVATE DCMTK::dcmnet DCMTK::dcmtls
+                                            DCMTK::dcmjpeg DCMTK::dcmjpls)
 target_link_libraries(dicomq-inject PRIVATE DCMTK::dcmdata)

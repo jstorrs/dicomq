@@ -209,6 +209,63 @@ else
   echo "skip - recv tests (no storescu on PATH)"
 fi
 
+# --- remote (needs storescp on PATH) ---------------------------------------
+if command -v storescp >/dev/null; then
+  PORT=11178
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/FWD"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1" \
+           "$DICOMQ_SPOOL/route/PACS1/todo" "$WORK/pacs1"
+  printf "host: localhost\nport: $PORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
+  printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/FWD/deliver"
+
+  # happy path: route then forward to a stock storescp
+  ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"      # route without triggering
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  storescp -od "$WORK/pacs1" $PORT 2>/dev/null & SCP=$!
+  wait_listen $PORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "remote delivers to the destination"  test -n "$(ls -A "$WORK/pacs1")"
+  check "remote dequeues after delivery"      test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+  check "no status file after success"        test ! -e "$DICOMQ_SPOOL/route/PACS1/status"
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+
+  # dead site: nothing listening
+  ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "down destination writes a status file" test -f "$DICOMQ_SPOOL/route/PACS1/status"
+  check "status has a next-attempt time"      grep -q '^next-attempt-after: ' "$DICOMQ_SPOOL/route/PACS1/status"
+  check "message survives a down destination" test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
+  check_not "envelope untouched by connection failure" \
+        grep -q '^attempt:' "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
+
+  # transcode policy: destination accepts implicit only, object is explicit
+  printf 'ImplicitVRLittleEndian\ntranscode: never\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  storescp -od "$WORK/pacs1" $PORT 2>/dev/null & SCP=$!
+  wait_listen $PORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "transcode never fails the message"   test -f "$DICOMQ_SPOOL/failed/$ID.env"
+  check "failure names the syntax problem"    grep -q "transcode is 'never'" "$DICOMQ_SPOOL/failed/$ID.env"
+
+  printf 'ImplicitVRLittleEndian\ntranscode: lossless\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  "$BIN/dicomq-super" requeue "$ID" >/dev/null
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  rm -f "$WORK/pacs1"/*
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "transcode lossless converts and delivers" test -n "$(ls -A "$WORK/pacs1")"
+  RECEIVED=$(ls "$WORK/pacs1" | head -1)
+  check "delivered object is implicit VR"     sh -c "dcmdump +f '$WORK/pacs1/$RECEIVED' 2>/dev/null | grep -qi 'implicit'"
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+else
+  echo "skip - remote tests (no storescp on PATH)"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 test "$FAIL" -eq 0
