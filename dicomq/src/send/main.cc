@@ -32,6 +32,11 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifdef __linux__
+#include <poll.h>
+#include <sys/inotify.h>
+#endif
+
 #include "common/envelope.h"
 #include "common/message.h"
 #include "common/profile.h"
@@ -118,6 +123,44 @@ static std::string resolveMaildir(const std::string& aetDir,
     return arg;
   return aetDir + "/" + arg;
 }
+
+// wait for new work: inotify on queue/todo/ where available (the kernel
+// queues events raised while we were busy routing, so no commit between
+// scan and wait is lost), with the periodic scan as backstop everywhere
+#ifdef __linux__
+static int inotifyFd = -1;
+
+static void watchTodo(const std::string& dir)
+{
+  inotifyFd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+  if (inotifyFd >= 0
+      && inotify_add_watch(inotifyFd, dir.c_str(), IN_MOVED_TO) < 0)
+  {
+    close(inotifyFd);
+    inotifyFd = -1;
+  }
+}
+
+static void waitForWork(long intervalSeconds)
+{
+  if (inotifyFd < 0)
+  {
+    sleep(static_cast<unsigned>(intervalSeconds));
+    return;
+  }
+  struct pollfd pfd = { inotifyFd, POLLIN, 0 };
+  poll(&pfd, 1, static_cast<int>(intervalSeconds * 1000));
+  char buf[4096];
+  while (read(inotifyFd, buf, sizeof(buf)) > 0)
+    ;  // drain; the scan that follows picks up everything
+}
+#else
+static void watchTodo(const std::string&) {}
+static void waitForWork(long intervalSeconds)
+{
+  sleep(static_cast<unsigned>(intervalSeconds));
+}
+#endif
 
 // route one message; on success it leaves queue/todo/
 static void processMessage(const std::string& id)
@@ -305,6 +348,9 @@ int main(int argc, char **argv)
     return 111;
   }
 
+  if (!once)
+    watchTodo(sp.queueTodo());
+
   for (;;)
   {
     reapAgents(false);
@@ -317,6 +363,6 @@ int main(int argc, char **argv)
       reapAgents(true);
       return 0;
     }
-    sleep(static_cast<unsigned>(interval));
+    waitForWork(interval);
   }
 }

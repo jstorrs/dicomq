@@ -135,6 +135,20 @@ check "unknown called AET is failed"        test -f "$DICOMQ_SPOOL/failed/$ID.en
 check "failed envelope says why"            grep -q '^failed: .*unknown called AET' "$DICOMQ_SPOOL/failed/$ID.env"
 check "unsatisfiable instruction defers in place" test -f "$DICOMQ_SPOOL/queue/todo/$ID2.env"
 
+# --- send: daemon mode reacts to new work via inotify ----------------------
+new_spool
+mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
+"$BIN/dicomq-send" -i 60 2>/dev/null & SEND=$!
+sleep 0.5
+ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
+DELIVERED=no
+for _ in $(seq 1 30); do
+  [ -f "$DICOMQ_SPOOL/aet/ARCHIVE/new/$ID.dcm" ] && { DELIVERED=yes; break; }
+  sleep 0.1
+done
+kill $SEND 2>/dev/null; wait $SEND 2>/dev/null
+check "daemon send delivers promptly (inotify, not the 60s scan)" test "$DELIVERED" = yes
+
 # --- queue + super --------------------------------------------------------
 new_spool
 mkdir -p "$DICOMQ_SPOOL/dest/PACS1" "$DICOMQ_SPOOL/route/PACS1/todo"
