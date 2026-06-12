@@ -27,6 +27,14 @@ new_spool() {
   mkdir -p "$DICOMQ_SPOOL"/{queue/{tmp,todo},route,aet,dest,failed,hold,corrupt}
 }
 
+wait_listen() { # wait_listen <port> — passive poll, no connection made
+  for _ in $(seq 1 100); do
+    ss -tln 2>/dev/null | grep -q ":$1 " && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 # --- a minimal valid Part 10 test object ---------------------------------
 cat > "$WORK/test.dump" <<'EOF'
 (0008,0016) UI [1.2.840.10008.5.1.4.1.1.7]
@@ -152,6 +160,54 @@ check "super fail records the reason"      grep -q '^failed: .*operator says no'
 "$BIN/dicomq-super" requeue "$ID" >/dev/null
 check "super requeue returns it to todo"   test -f "$DICOMQ_SPOOL/queue/todo/$ID.env"
 check_not "super refuses an unknown id"    "$BIN/dicomq-super" hold 19990101000000000.0.000000
+
+# --- recv (needs storescu/echoscu on PATH) --------------------------------
+if command -v storescu >/dev/null; then
+  PORT=11177
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
+
+  "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
+  RECV=$!; wait_listen $PORT
+  check "recv accepts a store for a known AET" \
+        storescu -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
+  wait $RECV
+  ID=$(ls "$DICOMQ_SPOOL/queue/todo" 2>/dev/null | sed -n 's/\.env$//p' | head -1)
+  check "recv commits the message"           test -n "$ID" -a -f "$DICOMQ_SPOOL/queue/todo/$ID.dcm"
+  check "envelope has calling AET"           grep -q '^calling-aet: MOD1$' "$DICOMQ_SPOOL/queue/todo/$ID.env"
+  check "envelope has SOP instance UID"      grep -q '^sop-instance-uid: 1.2.276.0.7230010.3.1.4.42.1$' "$DICOMQ_SPOOL/queue/todo/$ID.env"
+  check "file meta stamped with source AET"  sh -c "dcmdump '$DICOMQ_SPOOL/queue/todo/$ID.dcm' | grep -q '0002,0016.*MOD1'"
+  check "file meta stamped with receiving AET" sh -c "dcmdump '$DICOMQ_SPOOL/queue/todo/$ID.dcm' | grep -q '0002,0018.*ARCHIVE'"
+
+  "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
+  RECV=$!; wait_listen $PORT
+  check_not "recv rejects an unknown called AET" \
+        storescu -aet MOD1 -aec NOSUCH localhost $PORT "$WORK/test.dcm"
+  wait $RECV
+
+  "$BIN/dicomq-recv" --listen $PORT --once -w 10000000 2>/dev/null &
+  RECV=$!; wait_listen $PORT
+  check_not "recv refuses below the free-space watermark" \
+        storescu -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
+  wait $RECV
+
+  if command -v echoscu >/dev/null; then
+    "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
+    RECV=$!; wait_listen $PORT
+    check "recv answers C-ECHO"              echoscu -aec ARCHIVE localhost $PORT
+    wait $RECV
+  fi
+
+  # accept profile: ARCHIVE refuses implicit-only proposals
+  printf 'ExplicitVRLittleEndian\n' > "$DICOMQ_SPOOL/aet/ARCHIVE/accept"
+  "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
+  RECV=$!; wait_listen $PORT
+  check_not "accept profile refuses excluded syntaxes" \
+        storescu -xi -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
+  wait $RECV
+else
+  echo "skip - recv tests (no storescu on PATH)"
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"
