@@ -9,7 +9,7 @@ add_library(dicomq-common STATIC
 target_include_directories(dicomq-common PUBLIC src)
 target_compile_features(dicomq-common PUBLIC cxx_std_17)
 
-foreach(prog recv send local remote clean inject)
+foreach(prog recv send local remote clean inject queue super)
   add_executable(dicomq-${prog} src/${prog}/main.cc)
   target_link_libraries(dicomq-${prog} PRIVATE dicomq-common)
 endforeach()

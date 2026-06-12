@@ -38,7 +38,7 @@ must not be on NFS.
 
 ## Components
 
-| program | qmail analog | job |
+| program | analog | job |
 |---|---|---|
 | `dicomq-recv` | `qmail-smtpd` | accept one association, write objects into the queue, ack |
 | `dicomq-send` | `qmail-send` | watch the queue, route each object per its called AET |
@@ -46,6 +46,13 @@ must not be on NFS.
 | `dicomq-remote` | `qmail-remote` | forward queued objects to one destination over C-STORE |
 | `dicomq-clean` | `qmail-clean` | reap orphaned temporary files |
 | `dicomq-inject` | `qmail-inject` | enqueue a local DICOM file as if it had been received |
+| `dicomq-queue` | `postqueue`/`qshape` | show what is queued where: counts, ages, destination status (read-only) |
+| `dicomq-super` | `postsuper` | queue surgery: hold, release, requeue, fail |
+
+The last two are Postfix's contribution: qmail's queue was famously
+opaque, and Postfix won operators with inspection and surgery tools.
+"What is queued for PACS1, how old, and why" must be one command, not a
+shell pipeline invented mid-incident.
 
 Dataflow:
 
@@ -75,6 +82,8 @@ queue/
 route/
   <DEST>/
     todo/              # objects queued for destination <DEST>
+    status             # optional: destination-level backoff (dicomq-remote)
+    hold               # optional flag: operator froze this destination
 aet/
   <CALLEDAET>/         # existence ⇒ this called AE title is accepted
     accept             # optional: inbound transfer syntax profile
@@ -85,11 +94,14 @@ dest/
     remote             # host, port, AET of the remote SCP
     propose            # optional: outbound transfer syntax profile
 failed/                # terminal failures: object + annotated envelope
+hold/                  # operator-frozen messages (via dicomq-super)
+corrupt/               # quarantined malformed messages
 ```
 
 dicomq never creates `aet/`, `dest/`, or `route/<DEST>/` entries —
 creating them **is** configuration, done by the operator. `queue/`,
-`failed/`, and the contents of maildirs are dicomq's to write.
+`failed/`, `hold/`, `corrupt/`, route `status` files, and the contents
+of maildirs are dicomq's to write.
 
 Directory names under `aet/` are *sanitized* AE titles: trimmed,
 alphanumerics and `-` kept, everything else replaced by `_`, empty
@@ -175,6 +187,15 @@ Delivered objects stay self-describing even if a consumer discards the
 state is per-queue and mutable by design. The preamble is written as
 all zeros (the "unused" form) for received objects.
 
+Postfix made the opposite choice from the sidecar, too — one binary
+queue file per message holding envelope and content records, with
+per-recipient delivery state updated *in place* — and it works there
+because a queue file is never shared between queues, and recipients
+share one small file. Our fan-out shares the multi-megabyte object
+instead, and in-place record updates need write-ordering discipline
+that `rename(2)` gives us for free. Same verdict as the preamble, for
+the same reasons.
+
 ## Commit protocols
 
 Every transition follows the same shape: write into `tmp/` (or link/copy
@@ -186,6 +207,11 @@ its `.env` is an orphan, invisible to consumers, reaped by
 
 **Receive** (`dicomq-recv`, per object, before the C-STORE response):
 
+0. precondition, checked at association time: free space on the spool
+   filesystem is above a watermark (default 1 GiB; Postfix's
+   `queue_minfree`). Below it the association is refused — fail toward
+   the sender's retry queue, never toward `ENOSPC` mid-object, which is
+   the one failure the commit protocol cannot make graceful
 1. write `queue/tmp/<id>.dcm` — zeroed preamble, file meta stamped with
    (0002,0016/0017/0018) — and fsync
 2. write `queue/tmp/<id>.env`, fsync
@@ -207,6 +233,12 @@ sender keeps the object.
 A crash mid-routing re-routes the whole message on restart; step 2 is
 idempotent and step 3 must be (see below).
 
+A message whose envelope cannot be parsed is moved to `corrupt/`
+(object first, envelope last) and logged, and routing continues with
+the next message — a malformed message never blocks the queue and is
+never deleted by software (Postfix's `corrupt/` queue). After
+inspection the operator re-injects or removes it.
+
 **Local delivery** (`dicomq-local`): link `<id>.dcm` into
 `<dir>/new/` (`EEXIST` = already delivered = success). With the `env`
 option, the envelope is copied to `<dir>/new/<id>.env` first, so the
@@ -223,11 +255,31 @@ success, unlink (`.env` first, `.dcm` last); on failure, append an
 `attempt:` line, rewrite-and-commit the envelope copy (its mtime is now
 the last-attempt time), and leave it.
 
+A *connection-level* failure (unreachable, refused, association
+rejected) is destination state, not message state: `dicomq-remote`
+records it in `route/<DEST>/status` (envelope format: `last-failure:`,
+`next-attempt-after:`) and exits, and `dicomq-send` skips the whole
+destination until that time without reading a single per-message
+envelope — Postfix's dead-site backoff. Per-message `attempt:` records
+are for objects a *reachable* destination rejected. A successful
+association removes the status file.
+
 **Failure** (`dicomq-remote`, when a message exhausts its queue
 lifetime, or the destination rejects it permanently): link the `.dcm`
 into `failed/`, write an annotated envelope copy (with a final
 `failed:` reason line) beside it, then unlink from the route queue.
 `failed/` is the bounce pile; alerting watches it.
+
+**Hold and quarantine** (Postfix's `hold/` and `corrupt/` queues).
+`dicomq-super hold <id>` moves a message from its queue into `hold/`
+(same discipline: object first and envelope last on the way in,
+envelope first on the way out; a `held-from:` line records where it
+came from so `release` can return it). Touching `route/<DEST>/hold`
+freezes a whole destination: `dicomq-send` stops triggering
+`dicomq-remote <DEST>` until the flag is removed — a PACS migration is
+`touch`, migrate, `rm`. Nothing in `hold/`, `corrupt/`, or `failed/`
+is ever deleted by dicomq; leaving those directories is the operator's
+decision.
 
 ## Routing instructions: `aet/<AET>/deliver`
 
@@ -253,6 +305,25 @@ receiving AET is `mkdir aet/NEWAET/{tmp,new}`.
 An association addressed to a called AET with no `aet/` directory is
 **rejected at association time** — the unknown-recipient error happens
 at "RCPT TO", not as a later bounce.
+
+### Filters re-inject; nothing runs inline
+
+The replacement for storescp's `--exec-on-*` — and the answer to any
+future "transform objects in flight" request — is Postfix's
+content-filter pattern: deliver to the filter, let it process, and have
+it hand the result back to the queue as a new submission.
+
+```
+aet/INBOUND/deliver:      maildir /var/filter/work env
+
+(the filter watches work/new/, processes each object, then:)
+dicomq-inject -c FILTERED result.dcm
+```
+
+The queue core never executes user code; a crashed filter loses nothing
+because both sides are ordinary queue transitions; and the filter's
+output is a first-class message with its own envelope, retry schedule,
+and failure handling.
 
 ## Transfer syntax profiles
 
@@ -317,6 +388,19 @@ triggers `dicomq-remote <DEST>` when any of its messages are due, or
 when new messages arrive; one `dicomq-remote` runs per destination at a
 time (per-channel serialization, like qmail's).
 
+Two Postfix lessons bound the cost of this scheme:
+
+- **Destination-level backoff.** Per-message mtimes alone mean a down
+  destination is reconnected once per due cohort per scan cycle. The
+  `route/<DEST>/status` file (see Remote delivery) makes "PACS1 is down
+  until 14:32" one file read instead of N envelope stats.
+- **Scan cost is O(backlog).** Deciding due-ness stats every envelope
+  in every route queue each cycle. That is fine to roughly 10⁴ queued
+  messages; beyond it, the known fix is Postfix's active/deferred
+  split — a `deferred/` sibling per destination holding not-yet-due
+  messages, so the scheduler scans only a bounded active set. Recorded
+  here so the v1 simplification is a decision, not an accident.
+
 ## Process and privilege model
 
 - `dicomq-recv` runs **one process per association** under a socket
@@ -331,6 +415,9 @@ time (per-channel serialization, like qmail's).
   `dicomq-send`, also runnable by hand against the spool — which is the
   debugging story: every stage can be re-run from the shell.
 - `dicomq-clean` runs from a timer/cron.
+- `dicomq-queue` is read-only and safe for any user with read access to
+  the spool; `dicomq-super` performs queue surgery and runs as the
+  send user.
 - Two users suffice: one for recv (may write only `queue/`), one for
   send/local/remote/clean (everything else). The receiver compromise
   blast radius is "can enqueue objects", nothing more.
@@ -339,7 +426,7 @@ time (per-channel serialization, like qmail's).
 
 | storescp feature | replacement |
 |---|---|
-| `--exec-on-reception`, `--exec-on-eostudy`, `--exec-sync` | consumers watch maildir `new/`; study grouping is the consumer's concern (the queue is per-object by design) |
+| `--exec-on-reception`, `--exec-on-eostudy`, `--exec-sync` | consumers watch maildir `new/`; transforms use filter re-injection (see "Filters"); study grouping is the consumer's concern (the queue is per-object by design) |
 | `--sort-conc-studies`, `--sort-on-*`, `--timenames`, `--unique-filenames` | spool naming + per-AET maildirs |
 | `--rename-on-eostudy`, `--eostudy-timeout` | gone; "end of study" is not an event a per-object receiver can know |
 | `--fork` / `--single-process` / `--inetd` | socket supervisor, one process per association |
@@ -360,8 +447,10 @@ over verbatim. The expected order of work:
 1. `common/` spool primitives + `dicomq-inject` + `dicomq-clean`
    (testable without any DICOM networking)
 2. `dicomq-send` + `dicomq-local` (the queue core, still no networking)
-3. `dicomq-recv` (DCMTK association handling; replaces storescp+)
-4. `dicomq-remote` + transcoding profiles (new capability)
+3. `dicomq-queue` + `dicomq-super` (operability before the network: the
+   queue core is testable and inspectable from the shell)
+4. `dicomq-recv` (DCMTK association handling; replaces storescp+)
+5. `dicomq-remote` + transcoding profiles (new capability)
 
 ## Open questions
 
