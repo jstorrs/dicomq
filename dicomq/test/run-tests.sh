@@ -127,6 +127,32 @@ check "unknown called AET is failed"        test -f "$DICOMQ_SPOOL/failed/$ID.en
 check "failed envelope says why"            grep -q '^failed: .*unknown called AET' "$DICOMQ_SPOOL/failed/$ID.env"
 check "unsatisfiable instruction defers in place" test -f "$DICOMQ_SPOOL/queue/todo/$ID2.env"
 
+# --- queue + super --------------------------------------------------------
+new_spool
+mkdir -p "$DICOMQ_SPOOL/dest/PACS1" "$DICOMQ_SPOOL/route/PACS1/todo"
+mkdir -p "$DICOMQ_SPOOL/aet/FWD"/{tmp,new}
+printf 'host: localhost\nport: 11178\naet: PACS1\n' > "$DICOMQ_SPOOL/dest/PACS1/remote"
+printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/FWD/deliver"
+touch "$DICOMQ_SPOOL/route/PACS1/hold"
+ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+"$BIN/dicomq-send" --once 2>/dev/null
+OUT=$("$BIN/dicomq-queue")
+check "queue shows the route backlog"      grep -q 'route/PACS1.*1 message' <<<"$OUT"
+check "queue shows the hold flag"          grep -q 'held' <<<"$OUT"
+check "queue lists messages per dest"      grep -q "^$ID " <<<"$("$BIN/dicomq-queue" PACS1)"
+"$BIN/dicomq-super" hold "$ID" >/dev/null
+check "super hold moves the message"       test -f "$DICOMQ_SPOOL/hold/$ID.env"
+check "hold records the source queue"      grep -q '^held-from: route/PACS1/todo$' "$DICOMQ_SPOOL/hold/$ID.env"
+check "super hold is idempotent"           "$BIN/dicomq-super" hold "$ID"
+"$BIN/dicomq-super" release "$ID" >/dev/null
+check "super release returns it"           test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
+"$BIN/dicomq-super" fail "$ID" "operator says no" >/dev/null
+check "super fail moves to failed/"        test -f "$DICOMQ_SPOOL/failed/$ID.env"
+check "super fail records the reason"      grep -q '^failed: .*operator says no' "$DICOMQ_SPOOL/failed/$ID.env"
+"$BIN/dicomq-super" requeue "$ID" >/dev/null
+check "super requeue returns it to todo"   test -f "$DICOMQ_SPOOL/queue/todo/$ID.env"
+check_not "super refuses an unknown id"    "$BIN/dicomq-super" hold 19990101000000000.0.000000
+
 echo
 echo "$PASS passed, $FAIL failed"
 test "$FAIL" -eq 0
