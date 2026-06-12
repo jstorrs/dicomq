@@ -922,6 +922,15 @@ int main(int argc, char *argv[])
   }
 
   ImageDir.setOutputDirectory(opt_outputDirectory);
+  if (ImageDir.active)
+  {
+    OFString errorDetail;
+    if (!ImageDir.verifyLayout(errorDetail))
+    {
+      OFLOG_FATAL(storescpLogger, "invalid --imagedir layout: " << errorDetail);
+      return 1;
+    }
+  }
 
 #ifdef HAVE_FORK
   if (opt_forkMode)

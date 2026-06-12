@@ -6,6 +6,7 @@
 #else
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 class ImageDirManager
@@ -64,8 +65,40 @@ public:
   setOutputDirectory(const OFString &outputDirectory)
   {
     root = outputDirectory;
+    OFStandard::combineDirAndFilename(tmpDir,root,"tmp");
   }
-  
+
+  OFBool
+  verifyLayout(OFString& errorDetail)
+  {
+    OFString fallbackDir;
+    OFStandard::combineDirAndFilename(fallbackDir,root,"new");
+    if (!isValidDestination(tmpDir))
+    {
+      errorDetail = "'" + tmpDir + "' does not exist or is not a writable directory";
+      return OFFalse;
+    }
+    if (!isValidDestination(fallbackDir))
+    {
+      errorDetail = "'" + fallbackDir + "' does not exist or is not a writable directory";
+      return OFFalse;
+    }
+#ifndef _WIN32
+    // rename(2) cannot cross filesystems; catch a misconfigured spool at
+    // startup instead of refusing every store at delivery time
+    struct stat tmpStat, newStat;
+    if ((stat(tmpDir.c_str(), &tmpStat) == 0) && (stat(fallbackDir.c_str(), &newStat) == 0)
+        && (tmpStat.st_dev != newStat.st_dev))
+    {
+      errorDetail = "'" + tmpDir + "' and '" + fallbackDir
+        + "' are on different filesystems; rename(2) delivery would fail";
+      return OFFalse;
+    }
+#endif
+    return OFTrue;
+  }
+
+
   void
   setAETitle(OFString& dest, const DIC_AE aetitle)
   {
@@ -108,7 +141,6 @@ public:
   {
     setAETitle(sourceAETitle, callingTitle);
     setAETitle(targetAETitle, calledTitle);
-    OFStandard::combineDirAndFilename(tmpDir,root,"tmp");
     if (isReservedName(targetAETitle))
       OFStandard::combineDirAndFilename(newDir,root,"new");
     else

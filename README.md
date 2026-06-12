@@ -31,7 +31,11 @@ so a consumer watching the output directory never sees a partial file:
 
 `storescp+` never creates directories: `<output-dir>/tmp/` and
 `<output-dir>/new/` must exist before it starts, as must any per-AET
-destination directories you want to receive into.
+destination directories you want to receive into. It verifies at startup
+that `tmp/` and `new/` exist, are writable, and live on the same
+filesystem (atomic `rename(2)` cannot cross filesystems); per-AET
+directories on a different filesystem will cause those deliveries to be
+refused at store time.
 
 AE titles are sanitized before use in paths: trimmed, and anything other
 than alphanumerics and `-` replaced by `_` (an AET that sanitizes to the
