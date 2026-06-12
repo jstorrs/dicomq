@@ -326,6 +326,56 @@ else
   echo "skip - remote tests (no storescp on PATH)"
 fi
 
+# --- TLS (needs openssl and TLS-enabled DCMTK tools) -----------------------
+if command -v openssl >/dev/null && storescu --help 2>&1 | grep -q anonymous-tls; then
+  TPORT=11186
+  CERTS="$WORK/certs"; mkdir -p "$CERTS"
+  openssl req -x509 -newkey rsa:2048 -keyout "$CERTS/ca.key" -out "$CERTS/ca.pem" \
+      -days 1 -nodes -subj "/CN=dicomq-test-ca" 2>/dev/null
+  openssl req -newkey rsa:2048 -keyout "$CERTS/srv.key" -out "$CERTS/srv.csr" \
+      -nodes -subj "/CN=localhost" 2>/dev/null
+  openssl x509 -req -in "$CERTS/srv.csr" -CA "$CERTS/ca.pem" -CAkey "$CERTS/ca.key" \
+      -days 1 -out "$CERTS/srv.pem" 2>/dev/null
+
+  # recv serves TLS from <spool>/tls/
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new} "$DICOMQ_SPOOL/tls"
+  cp "$CERTS/srv.key" "$DICOMQ_SPOOL/tls/key.pem"
+  cp "$CERTS/srv.pem" "$DICOMQ_SPOOL/tls/cert.pem"
+  "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
+  wait_listen $TPORT
+  check "recv accepts a TLS store" \
+        storescu +tla +cf "$CERTS/ca.pem" -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
+  wait $RECV
+  check "TLS store is queued" test -n "$(ls -A "$DICOMQ_SPOOL/queue/todo")"
+
+  "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
+  wait_listen $TPORT
+  check_not "plaintext client cannot store to a TLS listener" \
+        storescu -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
+  kill $RECV 2>/dev/null; wait $RECV 2>/dev/null
+
+  # remote speaks TLS when dest/<DEST>/tls/ exists
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/FWD"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1/tls" \
+           "$DICOMQ_SPOOL/route/PACS1/todo" "$WORK/tlspacs"
+  printf "host: localhost\nport: $TPORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
+  printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/FWD/deliver"
+  cp "$CERTS/ca.pem" "$DICOMQ_SPOOL/dest/PACS1/tls/ca.pem"
+  ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  storescp +tls "$CERTS/srv.key" "$CERTS/srv.pem" -ic -od "$WORK/tlspacs" $TPORT 2>/dev/null & SCP=$!
+  wait_listen $TPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "remote delivers over TLS"            test -n "$(ls -A "$WORK/tlspacs")"
+  check "TLS route queue drained"             test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+else
+  echo "skip - TLS tests (no openssl or no TLS-enabled DCMTK)"
+fi
+
 # --- end to end: modality -> recv -> send -> maildir + remote -> PACS ------
 if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   RPORT=11184 PPORT=11185

@@ -1,6 +1,13 @@
 // dicomq-recv — DICOM C-STORE receiver (qmail-smtpd analog).
 //
 //   dicomq-recv [-s <spool>] [-w <watermark-MB>] [--listen <port>] [--once]
+//               [--tls]
+//
+// --tls serves DICOM TLS (BCP 195 profile) using <spool>/tls/key.pem
+// and <spool>/tls/cert.pem; if <spool>/tls/ca.pem exists, peer
+// certificates are required and verified against it, otherwise clients
+// may be anonymous. The supervisor decides per listening socket whether
+// to pass --tls.
 //
 // Default mode: one process per association under a socket supervisor
 // (systemd Accept=yes / s6 / ucspi-tcp); the connected socket is
@@ -29,6 +36,7 @@
 #include "dcmtk/dcmdata/dcxfer.h"
 #include "dcmtk/dcmnet/diutil.h"
 #include "dcmtk/dcmnet/dimse.h"
+#include "dcmtk/dcmtls/tlslayer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -306,11 +314,49 @@ static int handleAssociation(T_ASC_Association *assoc)
   }
 }
 
+// BCP 195 TLS from <spool>/tls/: key.pem + cert.pem mandatory, ca.pem
+// switches on peer-certificate verification
+static DcmTLSTransportLayer *makeTLSLayer(const std::string& dir,
+                                          std::string& err)
+{
+  DcmTLSTransportLayer::initializeOpenSSL();
+  DcmTLSTransportLayer *layer =
+      new DcmTLSTransportLayer(NET_ACCEPTOR, nullptr, OFFalse);
+  if (layer->setTLSProfile(TSP_Profile_BCP195).bad()
+      || layer->activateCipherSuites().bad())
+  {
+    err = "cannot activate the BCP 195 TLS profile";
+    return nullptr;
+  }
+  const std::string key = dir + "/key.pem", cert = dir + "/cert.pem";
+  if (layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).bad()
+      || layer->setCertificateFile(cert.c_str(), DCF_Filetype_PEM, TSP_Profile_BCP195).bad()
+      || !layer->checkPrivateKeyMatchesCertificate())
+  {
+    err = "cannot load '" + key + "' / '" + cert + "'";
+    return nullptr;
+  }
+  struct stat st;
+  const std::string ca = dir + "/ca.pem";
+  if (stat(ca.c_str(), &st) == 0)
+  {
+    if (layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).bad())
+    {
+      err = "cannot load '" + ca + "'";
+      return nullptr;
+    }
+    layer->setCertificateVerification(DCV_requireCertificate);
+  }
+  else
+    layer->setCertificateVerification(DCV_ignoreCertificate);
+  return layer;
+}
+
 int main(int argc, char **argv)
 {
   std::string spoolArg;
   long listenPort = 0;
-  bool once = false;
+  bool once = false, useTLS = false;
   for (int i = 1; i < argc; i++)
   {
     const std::string a = argv[i];
@@ -322,11 +368,13 @@ int main(int argc, char **argv)
       listenPort = atol(argv[++i]);
     else if (a == "--once")
       once = true;
+    else if (a == "--tls")
+      useTLS = true;
     else
     {
       std::fprintf(stderr,
           "usage: dicomq-recv [-s <spool>] [-w <watermark-MB>] "
-          "[--listen <port>] [--once]\n");
+          "[--listen <port>] [--once] [--tls]\n");
       return 100;
     }
   }
@@ -368,11 +416,23 @@ int main(int argc, char **argv)
     return 111;
   }
 
+  if (useTLS)
+  {
+    std::string err;
+    DcmTLSTransportLayer *layer = makeTLSLayer(sp.root + "/tls", err);
+    if (!layer || ASC_setTransportLayer(net, layer, 1).bad())
+    {
+      logmsg("TLS setup failed: " + (err.empty() ? "transport layer" : err));
+      return 111;
+    }
+  }
+
   int rc = 0;
   do
   {
     T_ASC_Association *assoc = nullptr;
-    cond = ASC_receiveAssociation(net, &assoc, ASC_DEFAULTMAXPDU);
+    cond = ASC_receiveAssociation(net, &assoc, ASC_DEFAULTMAXPDU, nullptr,
+                                  nullptr, useTLS ? OFTrue : OFFalse);
     if (cond.bad())
     {
       logmsg(std::string("cannot receive association: ") + cond.text());

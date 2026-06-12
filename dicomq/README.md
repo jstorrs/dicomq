@@ -72,6 +72,22 @@ and the `dicomq-clean` timer; create the `dicomq` and `dicomq-recv`
 users. Local submission and re-queueing use `dicomq-inject -c <aet>
 <file.dcm>...`.
 
+## TLS
+
+```sh
+mkdir $SPOOL/tls                    # inbound: key.pem + cert.pem,
+cp server.key $SPOOL/tls/key.pem    # optional ca.pem to require and
+cp server.pem $SPOOL/tls/cert.pem   # verify client certificates
+dicomq-recv --listen 11112 --tls
+
+mkdir $SPOOL/dest/PACS1/tls         # outbound: existence enables TLS;
+cp ca.pem $SPOOL/dest/PACS1/tls/    # ca.pem verifies the server, and
+                                    # key.pem+cert.pem (optional)
+                                    # authenticate us
+```
+
+Both sides use the DICOM BCP 195 profile.
+
 ## Operate
 
 ```sh

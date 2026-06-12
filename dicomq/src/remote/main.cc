@@ -18,6 +18,11 @@
 // (decompressing FROM lossy adds no further loss and is allowed);
 // 'as-needed' transcodes to anything the destination accepted.
 //
+// If dest/<DEST>/tls/ exists, the association uses DICOM TLS (BCP 195):
+// tls/ca.pem verifies the server (required when present, otherwise the
+// peer certificate is not checked — use a CA), and tls/key.pem +
+// tls/cert.pem, when present, authenticate us to the server.
+//
 // A connection-level failure is destination state, not message state:
 // it is recorded once in route/<DEST>/status (last-failure, failures,
 // next-attempt-after with exponential backoff capped at 1h) and the
@@ -42,6 +47,7 @@
 #include "dcmtk/dcmjpls/djencode.h"
 #include "dcmtk/dcmnet/dimse.h"
 #include "dcmtk/dcmnet/diutil.h"
+#include "dcmtk/dcmtls/tlslayer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -213,6 +219,37 @@ int main(int argc, char **argv)
     return 111;
   }
 
+  // dest/<DEST>/tls/ exists => DICOM TLS to this destination
+  struct stat st;
+  const std::string tlsDir = sp.destDir(destName) + "/tls";
+  const bool useTLS = (stat(tlsDir.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+  if (useTLS)
+  {
+    DcmTLSTransportLayer::initializeOpenSSL();
+    DcmTLSTransportLayer *layer =
+        new DcmTLSTransportLayer(NET_REQUESTOR, nullptr, OFFalse);
+    bool ok = layer->setTLSProfile(TSP_Profile_BCP195).good()
+              && layer->activateCipherSuites().good();
+    const std::string ca = tlsDir + "/ca.pem";
+    if (ok && stat(ca.c_str(), &st) == 0)
+    {
+      ok = layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).good();
+      layer->setCertificateVerification(DCV_requireCertificate);
+    }
+    else
+      layer->setCertificateVerification(DCV_ignoreCertificate);
+    const std::string key = tlsDir + "/key.pem", cert = tlsDir + "/cert.pem";
+    if (ok && stat(key.c_str(), &st) == 0)
+      ok = layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).good()
+           && layer->setCertificateFile(cert.c_str(), DCF_Filetype_PEM, TSP_Profile_BCP195).good()
+           && layer->checkPrivateKeyMatchesCertificate();
+    if (!ok || ASC_setTransportLayer(net, layer, 1).bad())
+    {
+      logmsg("TLS setup failed for '" + tlsDir + "'");
+      return 100;  // config problem, not destination weather
+    }
+  }
+
   T_ASC_Parameters *params = nullptr;
   ASC_createAssociationParameters(&params, ASC_DEFAULTMAXPDU,
                                   30 /* TCP connect timeout, seconds */);
@@ -221,6 +258,8 @@ int main(int argc, char **argv)
   gethostname(localHost, sizeof(localHost) - 1);
   const std::string peer = cfg.host + ":" + std::to_string(cfg.port);
   ASC_setPresentationAddresses(params, localHost, peer.c_str());
+  if (useTLS)
+    ASC_setTransportLayerType(params, OFTrue);
 
   // one context per (SOP class, transfer syntax): precise control over
   // what an accepted context implies

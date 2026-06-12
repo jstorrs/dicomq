@@ -409,8 +409,14 @@ Two Postfix lessons bound the cost of this scheme:
 - `dicomq-recv` runs **one process per association** under a socket
   supervisor — systemd socket activation (`Accept=yes`) or
   s6/ucspi-tcp. It inherits the connected socket, never listens, never
-  forks. TLS termination belongs to the supervisor layer or a DCMTK
-  TLS transport within recv (decision deferred).
+  forks. TLS terminates in recv (decided 2026-06: DICOM TLS profiles
+  are negotiated in-protocol, so a TLS-stripping proxy would break
+  conformance): `--tls` serves BCP 195 from `<spool>/tls/{key,cert}.pem`,
+  and a `tls/ca.pem` switches on peer-certificate verification. The
+  supervisor decides per listening socket whether to pass `--tls`.
+  Outbound, `dest/<DEST>/tls/` existing makes `dicomq-remote` speak TLS
+  to that destination (`ca.pem` verifies the server; optional
+  `key.pem`/`cert.pem` authenticate us).
 - `dicomq-send` is the one long-running process. It watches
   `queue/todo/` (inotify, plus a periodic scan as backstop) and owns all
   routing decisions.
@@ -457,8 +463,6 @@ over verbatim. The expected order of work:
 
 ## Open questions
 
-- TLS: terminate in the supervisor or in recv via DCMTK? (Leaning recv,
-  since DICOM TLS profiles are negotiated in-protocol.)
 - Should `accept` profiles also constrain SOP classes (a promiscuous
   flag per AET)?
 - Envelope `attempt:` history: cap the number of recorded attempts?
