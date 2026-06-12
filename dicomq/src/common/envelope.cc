@@ -14,6 +14,15 @@ std::string Envelope::get(const std::string& key) const
   return "";
 }
 
+size_t Envelope::count(const std::string& key) const
+{
+  size_t n = 0;
+  for (const auto& f : fields)
+    if (f.first == key)
+      n++;
+  return n;
+}
+
 void Envelope::add(const std::string& key, const std::string& value)
 {
   fields.emplace_back(key, value);

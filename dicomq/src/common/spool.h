@@ -57,10 +57,11 @@ time_t parseIsoTime(const std::string& s);
 // Free bytes on the filesystem holding path, or -1.
 long long freeBytes(const std::string& path);
 
-// qmail's quadratic retry schedule: a message is due for another
-// delivery attempt when (now - last attempt) >= backoffSeconds(age).
-// Grows as 2*sqrt(age*BASE), so successive attempts happen at ages
-// ~BASE*n^2; capped at 6 hours.
+// qmail's quadratic retry schedule: a message that has been attempted
+// is due again when (now - last attempt) >= backoffSeconds(age). Grows
+// as 2*sqrt(age*BASE), so successive attempts happen at ages ~BASE*n^2;
+// capped at 6 hours. A message with NO recorded attempts is always due
+// — callers must check the envelope's attempt count first.
 long backoffSeconds(long ageSeconds);
 bool isDue(time_t now, time_t lastAttempt, time_t received);
 

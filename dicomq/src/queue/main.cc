@@ -53,9 +53,18 @@ static QueueStats scan(const std::string& dir)
     const long age = static_cast<long>(now - idTime(id));
     if (age > q.oldest)
       q.oldest = age;
-    struct stat st;
-    if (stat(envPath(dir, id).c_str(), &st) == 0
-        && isDue(now, st.st_mtime, idTime(id)))
+    // never-attempted = due now; attempted = backoff schedule
+    Envelope env;
+    std::string err;
+    bool due = true;
+    if (Envelope::read(envPath(dir, id), env, err)
+        && env.count("attempt") > 0)
+    {
+      struct stat st;
+      due = stat(envPath(dir, id).c_str(), &st) == 0
+            && isDue(now, st.st_mtime, idTime(id));
+    }
+    if (due)
       q.due++;
   }
   return q;
