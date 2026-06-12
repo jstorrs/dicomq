@@ -21,6 +21,13 @@
 
 #include "dcmtk/config/osconfig.h"    /* make sure OS specific configuration is included first */
 
+#include <cstdlib>
+#include <cstring>
+#include <cstdarg>
+#include <cctype>
+#include <csignal>
+#include "dcmtk/ofstd/ofstdinc.h"
+
 BEGIN_EXTERN_C
 #ifdef HAVE_SYS_STAT_H
 #include <sys/stat.h>
@@ -58,6 +65,7 @@ END_EXTERN_C
 #include "dcmtk/dcmdata/dcdeftag.h"
 #include "dcmtk/dcmdata/dcostrmz.h"     /* for dcmZlibCompressionLevel */
 #include "dcmtk/dcmtls/tlsopt.h"        /* for DcmTLSOptions */
+#include "storescp+.h"
 
 #ifdef WITH_ZLIB
 #include <zlib.h>        /* for zlibVersion() */
@@ -72,12 +80,17 @@ END_EXTERN_C
 #ifdef PRIVATE_STORESCP_DECLARATIONS
 PRIVATE_STORESCP_DECLARATIONS
 #else
-#define OFFIS_CONSOLE_APPLICATION "storescp"
+#define OFFIS_CONSOLE_APPLICATION "storescp+"
 #endif
 
 static OFLogger storescpLogger = OFLog::getLogger("dcmtk.apps." OFFIS_CONSOLE_APPLICATION);
 
-static char rcsid[] = "$dcmtk: " OFFIS_CONSOLE_APPLICATION " v" OFFIS_DCMTK_VERSION " " OFFIS_DCMTK_RELEASEDATE " $";
+#ifndef STORESCP_PLUS_VERSION
+#define STORESCP_PLUS_VERSION "dev"
+#endif
+
+static char rcsid[] = "$storescp+: " OFFIS_CONSOLE_APPLICATION " v" STORESCP_PLUS_VERSION
+                      " (DCMTK " OFFIS_DCMTK_VERSION " " OFFIS_DCMTK_RELEASEDATE ") $";
 
 #define APPLICATIONTITLE "STORESCP"     /* our application entity title */
 
@@ -118,6 +131,7 @@ OFBool             opt_showPresentationContexts = OFFalse;
 OFBool             opt_uniqueFilenames = OFFalse;
 OFString           opt_fileNameExtension;
 OFBool             opt_timeNames = OFFalse;
+ImageDirManager    ImageDir;
 int                timeNameCounter = -1;   // "serial number" to differentiate between files with same timestamp
 OFCmdUnsignedInt   opt_port = 0;
 OFBool             opt_refuseAssociation = OFFalse;
@@ -218,6 +232,7 @@ int main(int argc, char *argv[])
   cmd.addParam("port", "tcp/ip port number to listen on", OFCmdParam::PM_Optional);
 
   cmd.setOptionColumns(LONGCOL, SHORTCOL);
+  ImageDir.addOptionGroup(cmd);
   cmd.addGroup("general options:", LONGCOL, SHORTCOL + 2);
     cmd.addOption("--help",                     "-h",      "print this help text and exit", OFCommandLine::AF_Exclusive);
     cmd.addOption("--version",                             "print version information and exit", OFCommandLine::AF_Exclusive);
@@ -612,6 +627,7 @@ int main(int argc, char *argv[])
 #endif
 
     if (cmd.findOption("--output-directory")) app.checkValue(cmd.getValue(opt_outputDirectory));
+    ImageDir.parseOptions(app,cmd);
 
     cmd.beginOptionBlock();
     if (cmd.findOption("--normal")) opt_bitPreserving = OFFalse;
@@ -904,6 +920,8 @@ int main(int argc, char *argv[])
     OFLOG_FATAL(storescpLogger, "specified output directory is not writeable");
     return 1;
   }
+
+  ImageDir.setOutputDirectory(opt_outputDirectory);
 
 #ifdef HAVE_FORK
   if (opt_forkMode)
@@ -1477,6 +1495,8 @@ static OFCondition acceptAssociation(T_ASC_Network *net, DcmAssociationConfigura
     calledAETitle = "\"";
     calledAETitle += OFSTRING_GUARD(calledTitle);
     calledAETitle += "\"";
+
+    ImageDir.setAETitles(callingTitle,calledTitle);
   }
   else
   {
@@ -1974,6 +1994,9 @@ storeSCPCallback(
       }
     }
 
+    if ( ImageDir.active )
+      ImageDir.finalizeDelivery();
+    
     // in case opt_bitPreserving is set, do some other things
     if( opt_bitPreserving )
     {
@@ -2076,6 +2099,10 @@ static OFCondition storeSCP(
         // reset counter, because timestamp and therefore filename has changed
         timeNameCounter = -1;
       }
+    } else if (ImageDir.active)
+    {
+      ImageDir.generateFileNames(req);
+      ImageDir.getTempFileName(imageFileName);
     }
     else
     {
