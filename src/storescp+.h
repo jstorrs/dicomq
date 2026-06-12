@@ -1,3 +1,6 @@
+#ifndef STORESCP_PLUS_H
+#define STORESCP_PLUS_H
+
 class ImageDirManager
 {
 
@@ -57,21 +60,21 @@ public:
   void
   setAETitle(OFString& dest, const DIC_AE aetitle)
   {
-    OFString tempAETitle = OFSTRING_GUARD(aetitle);
-    OFString::iterator it, itA, itZ;
+    const OFString src = OFSTRING_GUARD(aetitle);
+    size_t first = 0;
+    size_t last = src.length();
+    while ((first < last) && !isgraph(OFstatic_cast(unsigned char, src[first])))
+      first++;
+    while ((last > first) && !isgraph(OFstatic_cast(unsigned char, src[last - 1])))
+      last--;
     dest.clear();
-    itA = tempAETitle.begin();
-    itZ = tempAETitle.end();
-    for ( ; itA < itZ; itA++)
-      if (isgraph(*itA)) break ;
-    for ( ; itA < itZ; itZ--)
-      if (isgraph(*itZ)) break ;
-    for (it = itA; it <= itZ; it++) {
-      if (isalnum(*it) || (*it == '-') || (*it == '.')) {
-	dest += *it;
-      } else {
-	dest += "_";
-      }
+    for (size_t i = first; i < last; i++)
+    {
+      const unsigned char c = OFstatic_cast(unsigned char, src[i]);
+      if (isalnum(c) || (c == '-') || (c == '.'))
+        dest += OFstatic_cast(char, c);
+      else
+        dest += '_';
     }
   }
 
@@ -109,8 +112,8 @@ public:
   }
 
   void
-  getTempFileName(char *dst) {
-    OFStandard::strlcpy(dst, tmpFileName.c_str(), PATH_MAX);
+  getTempFileName(char *dst, size_t dstsize) {
+    OFStandard::strlcpy(dst, tmpFileName.c_str(), dstsize);
   }
 
   void
@@ -136,3 +139,5 @@ public:
     active(OFFalse) { }
 
 };
+
+#endif // STORESCP_PLUS_H

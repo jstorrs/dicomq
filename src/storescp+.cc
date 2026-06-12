@@ -2102,7 +2102,7 @@ static OFCondition storeSCP(
     } else if (ImageDir.active)
     {
       ImageDir.generateFileNames(req);
-      ImageDir.getTempFileName(imageFileName);
+      ImageDir.getTempFileName(imageFileName, sizeof(imageFileName));
     }
     else
     {
