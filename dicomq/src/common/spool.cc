@@ -1,16 +1,22 @@
 #include "common/spool.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
+
+namespace fs = std::filesystem;
 
 namespace dicomq {
 
@@ -119,6 +125,128 @@ bool linkIdempotent(const std::string& from, const std::string& to,
     return false;
   }
   return fsyncPath(dirOf(to), err);
+}
+
+std::vector<std::string> listIds(const std::string& dir)
+{
+  std::vector<std::string> ids;
+  std::error_code ec;
+  for (const auto& entry : fs::directory_iterator(dir, ec))
+  {
+    const std::string name = entry.path().filename().string();
+    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".env") == 0)
+      ids.push_back(name.substr(0, name.size() - 4));
+  }
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
+
+std::vector<std::string> listSubdirs(const std::string& dir)
+{
+  std::vector<std::string> names;
+  std::error_code ec;
+  for (const auto& entry : fs::directory_iterator(dir, ec))
+  {
+    if (entry.is_directory(ec))
+      names.push_back(entry.path().filename().string());
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+bool copyFile(const std::string& src, const std::string& dst, std::string& err)
+{
+  const int in = open(src.c_str(), O_RDONLY);
+  if (in < 0)
+  {
+    err = "cannot open '" + src + "': " + strerror(errno);
+    return false;
+  }
+  const int out = open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (out < 0)
+  {
+    err = "cannot create '" + dst + "': " + strerror(errno);
+    close(in);
+    return false;
+  }
+  char buf[65536];
+  ssize_t got;
+  while ((got = read(in, buf, sizeof(buf))) > 0)
+  {
+    ssize_t done = 0;
+    while (done < got)
+    {
+      const ssize_t put = write(out, buf + done, got - done);
+      if (put < 0)
+      {
+        err = "write error on '" + dst + "': " + strerror(errno);
+        close(in);
+        close(out);
+        return false;
+      }
+      done += put;
+    }
+  }
+  const bool readOk = (got == 0);
+  if (!readOk)
+    err = "read error on '" + src + "': " + strerror(errno);
+  close(in);
+  close(out);
+  return readOk;
+}
+
+time_t idTime(const std::string& id)
+{
+  struct tm tm;
+  memset(&tm, 0, sizeof(tm));
+  if (sscanf(id.c_str(), "%4d%2d%2d%2d%2d%2d", &tm.tm_year, &tm.tm_mon,
+             &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6)
+    return 0;
+  tm.tm_year -= 1900;
+  tm.tm_mon -= 1;
+  return timegm(&tm);
+}
+
+std::string isoTime(time_t t)
+{
+  struct tm tm;
+  gmtime_r(&t, &tm);
+  char buf[32];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+  return buf;
+}
+
+time_t parseIsoTime(const std::string& s)
+{
+  struct tm tm;
+  memset(&tm, 0, sizeof(tm));
+  if (!strptime(s.c_str(), "%Y-%m-%dT%H:%M:%S", &tm))
+    return 0;
+  return timegm(&tm);
+}
+
+long long freeBytes(const std::string& path)
+{
+  struct statvfs vfs;
+  if (statvfs(path.c_str(), &vfs) != 0)
+    return -1;
+  return static_cast<long long>(vfs.f_bavail) * vfs.f_frsize;
+}
+
+static const long BACKOFF_BASE = 420;    // ~7 minutes
+static const long BACKOFF_CAP = 21600;   // 6 hours
+
+long backoffSeconds(long ageSeconds)
+{
+  if (ageSeconds <= 0)
+    return 0;
+  const double b = 2.0 * sqrt(static_cast<double>(ageSeconds) * BACKOFF_BASE);
+  return b > BACKOFF_CAP ? BACKOFF_CAP : static_cast<long>(b);
+}
+
+bool isDue(time_t now, time_t lastAttempt, time_t received)
+{
+  return now - lastAttempt >= backoffSeconds(static_cast<long>(now - received));
 }
 
 } // namespace dicomq

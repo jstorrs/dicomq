@@ -45,6 +45,36 @@ static bool readProfileLines(const std::string& path,
   return true;
 }
 
+std::string transferSyntaxUID(const std::string& nameOrUID)
+{
+  if (!nameOrUID.empty() && isdigit(static_cast<unsigned char>(nameOrUID[0]))
+      && nameOrUID.find('.') != std::string::npos)
+    return nameOrUID;  // already a UID
+
+  static const struct { const char *name, *uid; } aliases[] = {
+    { "ImplicitVRLittleEndian",        "1.2.840.10008.1.2" },
+    { "ExplicitVRLittleEndian",        "1.2.840.10008.1.2.1" },
+    { "DeflatedExplicitVRLittleEndian","1.2.840.10008.1.2.1.99" },
+    { "ExplicitVRBigEndian",           "1.2.840.10008.1.2.2" },
+    { "JPEGBaseline",                  "1.2.840.10008.1.2.4.50" },
+    { "JPEGExtended",                  "1.2.840.10008.1.2.4.51" },
+    { "JPEGLossless",                  "1.2.840.10008.1.2.4.57" },
+    { "JPEGLosslessSV1",               "1.2.840.10008.1.2.4.70" },
+    { "JPEGLSLossless",                "1.2.840.10008.1.2.4.80" },
+    { "JPEGLSLossy",                   "1.2.840.10008.1.2.4.81" },
+    { "JPEG2000LosslessOnly",          "1.2.840.10008.1.2.4.90" },
+    { "JPEG2000",                      "1.2.840.10008.1.2.4.91" },
+    { "MPEG2MainProfile",              "1.2.840.10008.1.2.4.100" },
+    { "MPEG4HighProfile",              "1.2.840.10008.1.2.4.102" },
+    { "HEVCMainProfile",               "1.2.840.10008.1.2.4.107" },
+    { "RLELossless",                   "1.2.840.10008.1.2.5" },
+  };
+  for (const auto& a : aliases)
+    if (nameOrUID == a.name)
+      return a.uid;
+  return "";
+}
+
 bool AcceptProfile::load(const std::string& path, AcceptProfile& p,
                          std::string& err)
 {
@@ -58,9 +88,17 @@ bool AcceptProfile::load(const std::string& path, AcceptProfile& p,
   for (const auto& line : lines)
   {
     if (line == "*")
+    {
       p.acceptAll = true;
-    else
-      p.transferSyntaxes.push_back(line);
+      continue;
+    }
+    const std::string uid = transferSyntaxUID(line);
+    if (uid.empty())
+    {
+      err = "unknown transfer syntax in '" + path + "': " + line;
+      return false;
+    }
+    p.transferSyntaxes.push_back(uid);
   }
   return true;
 }
@@ -93,7 +131,75 @@ bool ProposeProfile::load(const std::string& path, ProposeProfile& p,
       }
     }
     else
-      p.transferSyntaxes.push_back(line);
+    {
+      const std::string uid = transferSyntaxUID(line);
+      if (uid.empty())
+      {
+        err = "unknown transfer syntax in '" + path + "': " + line;
+        return false;
+      }
+      p.transferSyntaxes.push_back(uid);
+    }
+  }
+  return true;
+}
+
+bool loadDeliver(const std::string& path,
+                 std::vector<DeliverInstruction>& out, std::string& err)
+{
+  out.clear();
+  std::vector<std::string> lines;
+  bool missing = false;
+  if (!readProfileLines(path, lines, /*missingOk=*/true, missing, err))
+    return false;
+  if (missing)
+  {
+    DeliverInstruction def;
+    def.kind = DeliverInstruction::Kind::Maildir;
+    def.arg = "./";
+    out.push_back(def);
+    return true;
+  }
+  for (const auto& line : lines)
+  {
+    DeliverInstruction in;
+    // split into at most 3 whitespace-separated words
+    std::vector<std::string> words;
+    size_t pos = 0;
+    while (pos < line.size() && words.size() < 4)
+    {
+      const size_t start = line.find_first_not_of(" \t", pos);
+      if (start == std::string::npos)
+        break;
+      size_t end = line.find_first_of(" \t", start);
+      if (end == std::string::npos)
+        end = line.size();
+      words.push_back(line.substr(start, end - start));
+      pos = end;
+    }
+    if (words.size() == 2 && words[0] == "forward")
+    {
+      in.kind = DeliverInstruction::Kind::Forward;
+      in.arg = words[1];
+    }
+    else if ((words.size() == 2 || (words.size() == 3 && words[2] == "env"))
+             && words[0] == "maildir")
+    {
+      in.kind = DeliverInstruction::Kind::Maildir;
+      in.arg = words[1];
+      in.withEnv = (words.size() == 3);
+    }
+    else
+    {
+      err = "malformed instruction in '" + path + "': " + line;
+      return false;
+    }
+    out.push_back(in);
+  }
+  if (out.empty())
+  {
+    err = "'" + path + "' contains no instructions";
+    return false;
   }
   return true;
 }

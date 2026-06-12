@@ -4,6 +4,7 @@
 add_library(dicomq-common STATIC
   src/common/spool.cc
   src/common/envelope.cc
+  src/common/message.cc
   src/common/profile.cc
 )
 target_include_directories(dicomq-common PUBLIC src)
