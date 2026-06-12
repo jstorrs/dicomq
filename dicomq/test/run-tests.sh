@@ -35,7 +35,8 @@ wait_listen() { # wait_listen <port> — passive poll, no connection made
   return 1
 }
 
-# --- a minimal valid Part 10 test object ---------------------------------
+# --- a minimal valid Part 10 test object (with pixels, so transcoding
+# --- to image-compression syntaxes is exercised for real) -----------------
 cat > "$WORK/test.dump" <<'EOF'
 (0008,0016) UI [1.2.840.10008.5.1.4.1.1.7]
 (0008,0018) UI [1.2.276.0.7230010.3.1.4.42.1]
@@ -43,6 +44,15 @@ cat > "$WORK/test.dump" <<'EOF'
 (0010,0010) PN [TEST^PATIENT]
 (0020,000d) UI [1.2.276.0.7230010.3.1.2.42.1]
 (0020,000e) UI [1.2.276.0.7230010.3.1.3.42.1]
+(0028,0002) US 1
+(0028,0004) CS [MONOCHROME2]
+(0028,0010) US 8
+(0028,0011) US 8
+(0028,0100) US 8
+(0028,0101) US 8
+(0028,0102) US 7
+(0028,0103) US 0
+(7fe0,0010) OB 00\10\20\30\40\50\60\70\01\11\21\31\41\51\61\71\02\12\22\32\42\52\62\72\03\13\23\33\43\53\63\73\04\14\24\34\44\54\64\74\05\15\25\35\45\55\65\75\06\16\26\36\46\56\66\76\07\17\27\37\47\57\67\77
 EOF
 dump2dcm +te "$WORK/test.dump" "$WORK/test.dcm" 2>/dev/null \
   || { echo "cannot create test object (dump2dcm missing?)"; exit 1; }
@@ -275,6 +285,42 @@ if command -v storescp >/dev/null; then
   check "transcode lossless converts and delivers" test -n "$(ls -A "$WORK/pacs1")"
   RECEIVED=$(ls "$WORK/pacs1" | head -1)
   check "delivered object is implicit VR"     sh -c "dcmdump +f '$WORK/pacs1/$RECEIVED' 2>/dev/null | grep -qi 'implicit'"
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+
+  # compressing transcode: destination wants JPEG-LS lossless
+  printf 'JPEGLSLossless\ntranscode: lossless\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  rm -f "$WORK/pacs1"/*
+  storescp +xa -od "$WORK/pacs1" $PORT 2>/dev/null & SCP=$!
+  wait_listen $PORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "lossless compressing transcode delivers" test -n "$(ls -A "$WORK/pacs1")"
+  RECEIVED=$(ls "$WORK/pacs1" | head -1)
+  check "delivered object is JPEG-LS"         sh -c "dcmdump +f '$WORK/pacs1/$RECEIVED' 2>/dev/null | grep -q 'JPEGLSLossless'"
+
+  # lossy target: refused under lossless, allowed under as-needed
+  printf 'JPEGBaseline\ntranscode: lossless\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "lossy target refused under 'lossless'" test -f "$DICOMQ_SPOOL/failed/$ID.env"
+  check "refusal names the lossy syntax"      grep -q "is lossy and transcode is 'lossless'" "$DICOMQ_SPOOL/failed/$ID.env"
+
+  printf 'JPEGBaseline\ntranscode: as-needed\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  "$BIN/dicomq-super" requeue "$ID" >/dev/null
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  rm -f "$WORK/pacs1"/*
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "lossy transcode delivers under 'as-needed'" test -n "$(ls -A "$WORK/pacs1")"
+  RECEIVED=$(ls "$WORK/pacs1" | head -1)
+  check "delivered object is JPEG baseline"   sh -c "dcmdump +f '$WORK/pacs1/$RECEIVED' 2>/dev/null | grep -q 'JPEGBaseline'"
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
 else
   echo "skip - remote tests (no storescp on PATH)"

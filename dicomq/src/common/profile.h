@@ -42,6 +42,12 @@ struct ProposeProfile {
 // load time.
 std::string transferSyntaxUID(const std::string& nameOrUID);
 
+// Whether converting INTO this transfer syntax discards information —
+// the question "transcode: lossless" asks of a target syntax.
+// (Decompressing FROM a lossy syntax adds no further loss and is always
+// allowed.)
+bool isLossyTransferSyntaxUID(const std::string& uid);
+
 // aet/<AET>/deliver — routing instructions, one per line (DESIGN.md
 // "Routing instructions"). A missing file yields the default
 // instruction: maildir ./ without envelope.

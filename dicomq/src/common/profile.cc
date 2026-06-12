@@ -75,6 +75,22 @@ std::string transferSyntaxUID(const std::string& nameOrUID)
   return "";
 }
 
+bool isLossyTransferSyntaxUID(const std::string& uid)
+{
+  static const char *lossy[] = {
+    "1.2.840.10008.1.2.4.50",   // JPEG baseline
+    "1.2.840.10008.1.2.4.51",   // JPEG extended
+    "1.2.840.10008.1.2.4.81",   // JPEG-LS near-lossless
+    "1.2.840.10008.1.2.4.91",   // JPEG 2000 (may be lossy)
+    "1.2.840.10008.1.2.4.93",   // JPEG 2000 part 2 (may be lossy)
+  };
+  for (const char *u : lossy)
+    if (uid == u)
+      return true;
+  // all MPEG/HEVC video syntaxes are lossy
+  return uid.compare(0, 25, "1.2.840.10008.1.2.4.10") == 0;
+}
+
 bool AcceptProfile::load(const std::string& path, AcceptProfile& p,
                          std::string& err)
 {

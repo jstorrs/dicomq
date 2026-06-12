@@ -13,9 +13,10 @@
 // (no accepted context, transcode forbidden or unavailable) or an
 // exhausted queue lifetime (default 7 days) moves it to failed/ with a
 // reason. Transcoding happens per attempt, in memory; the queued object
-// is never modified. Decoders only in v1: conversions to uncompressed
-// syntaxes work, compressing transcodes do not (policy lossless and
-// as-needed currently behave alike).
+// is never modified. Policy: 'never' requires the stored syntax to be
+// accepted; 'lossless' transcodes but refuses lossy target syntaxes
+// (decompressing FROM lossy adds no further loss and is allowed);
+// 'as-needed' transcodes to anything the destination accepted.
 //
 // A connection-level failure is destination state, not message state:
 // it is recorded once in route/<DEST>/status (last-failure, failures,
@@ -32,10 +33,13 @@
 #include "dcmtk/dcmdata/dcdeftag.h"
 #include "dcmtk/dcmdata/dcfilefo.h"
 #include "dcmtk/dcmdata/dcrledrg.h"
+#include "dcmtk/dcmdata/dcrleerg.h"
 #include "dcmtk/dcmdata/dcuid.h"
 #include "dcmtk/dcmdata/dcxfer.h"
 #include "dcmtk/dcmjpeg/djdecode.h"
+#include "dcmtk/dcmjpeg/djencode.h"
 #include "dcmtk/dcmjpls/djdecode.h"
+#include "dcmtk/dcmjpls/djencode.h"
 #include "dcmtk/dcmnet/dimse.h"
 #include "dcmtk/dcmnet/diutil.h"
 
@@ -191,10 +195,14 @@ int main(int argc, char **argv)
   if (work.empty())
     return 0;
 
-  // decoders so transcoding *to* uncompressed syntaxes works
+  // decoders for transcoding to uncompressed syntaxes, encoders for
+  // transcoding to compressed ones
   DJDecoderRegistration::registerCodecs();
   DJLSDecoderRegistration::registerCodecs();
   DcmRLEDecoderRegistration::registerCodecs();
+  DJEncoderRegistration::registerCodecs();
+  DJLSEncoderRegistration::registerCodecs();
+  DcmRLEEncoderRegistration::registerCodecs();
 
   OFStandard::initializeNetwork();
   T_ASC_Network *net = nullptr;
@@ -206,7 +214,8 @@ int main(int argc, char **argv)
   }
 
   T_ASC_Parameters *params = nullptr;
-  ASC_createAssociationParameters(&params, ASC_DEFAULTMAXPDU);
+  ASC_createAssociationParameters(&params, ASC_DEFAULTMAXPDU,
+                                  30 /* TCP connect timeout, seconds */);
   ASC_setAPTitles(params, callingAET.c_str(), cfg.aet.c_str(), nullptr);
   char localHost[256];
   gethostname(localHost, sizeof(localHost) - 1);
@@ -304,6 +313,14 @@ int main(int argc, char **argv)
                     + " not accepted and transcode is 'never'");
         continue;
       }
+      if (profile.transcode == ProposeProfile::Transcode::Lossless
+          && isLossyTransferSyntaxUID(pc.acceptedTransferSyntax))
+      {
+        failMessage(todo, id, env, std::string("accepted syntax ")
+                    + pc.acceptedTransferSyntax
+                    + " is lossy and transcode is 'lossless'");
+        continue;
+      }
       const DcmXfer target(pc.acceptedTransferSyntax);
       dataset->chooseRepresentation(target.getXfer(), nullptr);
       if (!dataset->canWriteXfer(target.getXfer()))
@@ -366,5 +383,8 @@ int main(int argc, char **argv)
   DJDecoderRegistration::cleanup();
   DJLSDecoderRegistration::cleanup();
   DcmRLEDecoderRegistration::cleanup();
+  DJEncoderRegistration::cleanup();
+  DJLSEncoderRegistration::cleanup();
+  DcmRLEEncoderRegistration::cleanup();
   return 0;
 }
