@@ -1,0 +1,12 @@
+[Unit]
+Description=dicomq orphan reaper
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dicomq-clean
+Environment=DICOMQ_SPOOL=/var/spool/dicomq
+User=dicomq
+Group=dicomq
+ReadWritePaths=/var/spool/dicomq
+ProtectSystem=strict
+NoNewPrivileges=yes

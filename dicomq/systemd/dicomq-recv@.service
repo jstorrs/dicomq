@@ -1,0 +1,16 @@
+[Unit]
+Description=dicomq DICOM C-STORE receiver (per association)
+
+[Service]
+ExecStart=/usr/local/bin/dicomq-recv
+StandardInput=socket
+StandardOutput=null
+StandardError=journal
+Environment=DICOMQ_SPOOL=/var/spool/dicomq
+User=dicomq-recv
+Group=dicomq
+# the receiver may write only the queue; see DESIGN.md
+ReadWritePaths=/var/spool/dicomq/queue
+ProtectSystem=strict
+PrivateTmp=yes
+NoNewPrivileges=yes

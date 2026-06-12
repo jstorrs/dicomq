@@ -10,4 +10,5 @@ target_link_libraries(storescp+ PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
 include(GNUInstallDirs)
 install(TARGETS storescp+ RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
+enable_testing()
 add_subdirectory(dicomq)

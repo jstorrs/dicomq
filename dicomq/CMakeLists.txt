@@ -24,3 +24,8 @@ target_link_libraries(dicomq-inject PRIVATE DCMTK::dcmdata)
 foreach(prog recv send local remote clean inject queue super)
   install(TARGETS dicomq-${prog} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endforeach()
+
+add_test(NAME dicomq-integration
+  COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/test/run-tests.sh"
+               "$<TARGET_FILE_DIR:dicomq-send>")
+set_tests_properties(dicomq-integration PROPERTIES TIMEOUT 300)

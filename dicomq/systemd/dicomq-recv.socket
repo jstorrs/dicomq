@@ -1,0 +1,12 @@
+# One dicomq-recv process per association (DESIGN.md "Process and
+# privilege model"). Adjust the port; 104 needs CAP_NET_BIND_SERVICE.
+[Unit]
+Description=dicomq DICOM C-STORE listener
+
+[Socket]
+ListenStream=11112
+Accept=yes
+MaxConnections=32
+
+[Install]
+WantedBy=sockets.target
