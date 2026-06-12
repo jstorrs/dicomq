@@ -1,6 +1,13 @@
 #ifndef STORESCP_PLUS_H
 #define STORESCP_PLUS_H
 
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 class ImageDirManager
 {
 
@@ -45,6 +52,8 @@ public:
 	IMAGEDIR_CHECK_CONFLICT("--rename-on-eostudy");
 	IMAGEDIR_CHECK_CONFLICT("--eostudy-timeout");
 	IMAGEDIR_CHECK_CONFLICT("--exec-sync");
+	IMAGEDIR_CHECK_CONFLICT("--ignore");
+	IMAGEDIR_CHECK_CONFLICT("--bit-preserving");
 #undef IMAGEDIR_CHECK_CONFLICT
 	active = OFTrue;
       }
@@ -138,9 +147,73 @@ public:
     OFStandard::strlcpy(dst, tmpFileName.c_str(), dstsize);
   }
 
+  OFBool
+  syncPath(const OFString& path, OFString& errorDetail)
+  {
+#ifdef _WIN32
+    // _commit() cannot flush a directory entry on Windows; file content only
+    int fd = _open(path.c_str(), _O_RDONLY | _O_BINARY);
+    if (fd < 0)
+    {
+      errorDetail = "cannot open '" + path + "' for sync: ";
+      errorDetail += strerror(errno);
+      return OFFalse;
+    }
+    if (_commit(fd) != 0)
+    {
+      errorDetail = "cannot sync '" + path + "': ";
+      errorDetail += strerror(errno);
+      _close(fd);
+      return OFFalse;
+    }
+    _close(fd);
+#else
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0)
+    {
+      errorDetail = "cannot open '" + path + "' for sync: ";
+      errorDetail += strerror(errno);
+      return OFFalse;
+    }
+    if (fsync(fd) != 0)
+    {
+      errorDetail = "cannot sync '" + path + "': ";
+      errorDetail += strerror(errno);
+      close(fd);
+      return OFFalse;
+    }
+    close(fd);
+#endif
+    return OFTrue;
+  }
+
+  OFBool
+  finalizeDelivery(OFString& errorDetail)
+  {
+    // qmail-style ordering: make the object durable, publish it by rename,
+    // make the new directory entry durable. Only after all three may the
+    // C-STORE response report success; a crash or failure after the rename
+    // means at-least-once delivery, never a lost or partial object.
+    if (!syncPath(tmpFileName, errorDetail))
+      return OFFalse;
+    if (!OFStandard::renameFile(tmpFileName, newFileName))
+    {
+      errorDetail = "cannot rename '" + tmpFileName + "' to '" + newFileName + "': ";
+      errorDetail += strerror(errno);
+      return OFFalse;
+    }
+#ifndef _WIN32
+    if (!syncPath(newDir, errorDetail))
+      return OFFalse;
+#endif
+    return OFTrue;
+  }
+
   void
-  finalizeDelivery() {
-    OFStandard::renameFile(tmpFileName,newFileName);
+  discardDelivery()
+  {
+    // remove the undelivered temporary file; it may legitimately not exist
+    OFStandard::deleteFile(tmpFileName);
   }
 
   bool

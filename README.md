@@ -16,8 +16,9 @@ so a consumer watching the output directory never sees a partial file:
    tmp/[CalledAET].[CallingAET].[YYYYMMDDHHMMSSMMM].[PID].[COUNTER].[MODALITY].dcm
    ```
 
-2. After the object has been received and written completely, it is
-   `rename(2)`d to its final destination:
+2. After the object has been received, written completely, and flushed
+   to stable storage (`fsync`), it is `rename(2)`d to its final
+   destination and the destination directory entry is flushed as well:
 
    ```
    [CalledAET]/[CallingAET].[YYYYMMDDHHMMSSMMM].[PID].[COUNTER].[MODALITY].dcm
@@ -41,9 +42,21 @@ directory; such deliveries fall back to `new/`. Filenames are unique
 across concurrent receivers by construction (timestamp + PID + per-process
 counter).
 
+Delivery semantics are qmail's: an object is delivered durably *before*
+the success C-STORE response is sent, and an object is never delivered
+when the response reports failure (the temporary file is removed, the
+sender keeps the object, and may retry). If delivery itself fails — for
+example the rename fails because `tmp/` and the destination are on
+different filesystems — the response reports failure rather than
+acknowledging an object that was not delivered. The result is
+at-least-once delivery: a crash between rename and response can deliver
+the same object twice, as two distinct files. Consumers that need
+exactly-once must deduplicate on SOP Instance UID.
+
 `--imagedir` conflicts with the stock filename/sorting/event options that it
 replaces (`--timenames`, `--sort-*`, `--exec-on-*`, `--rename-on-eostudy`,
-`--eostudy-timeout`, `--exec-sync`).
+`--eostudy-timeout`, `--exec-sync`), and with `--ignore` and
+`--bit-preserving`, which bypass the delivery path.
 
 All other behavior and options are unchanged from stock `storescp`.
 

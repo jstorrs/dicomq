@@ -1998,8 +1998,26 @@ storeSCPCallback(
     }
 
     if ( ImageDir.active )
-      ImageDir.finalizeDelivery();
-    
+    {
+      if (rsp->DimseStatus == STATUS_Success)
+      {
+        OFString errorDetail;
+        if (!ImageDir.finalizeDelivery(errorDetail))
+        {
+          OFLOG_ERROR(storescpLogger, "imagedir delivery failed: " << errorDetail);
+          rsp->DimseStatus = STATUS_STORE_Refused_OutOfResources;
+          ImageDir.discardDelivery();
+        }
+      }
+      else
+      {
+        // never deliver an object whose C-STORE response reports failure;
+        // the sender keeps the object and may retry
+        ImageDir.discardDelivery();
+      }
+    }
+
+
     // in case opt_bitPreserving is set, do some other things
     if( opt_bitPreserving )
     {
