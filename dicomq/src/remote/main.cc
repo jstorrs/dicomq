@@ -254,8 +254,8 @@ int main(int argc, char **argv)
   ASC_createAssociationParameters(&params, ASC_DEFAULTMAXPDU,
                                   30 /* TCP connect timeout, seconds */);
   ASC_setAPTitles(params, callingAET.c_str(), cfg.aet.c_str(), nullptr);
-  char localHost[256];
-  gethostname(localHost, sizeof(localHost) - 1);
+  char localHost[256] = {0};  // POSIX leaves the result unterminated on
+  gethostname(localHost, sizeof(localHost) - 1);  // truncation; pre-NUL it
   const std::string peer = cfg.host + ":" + std::to_string(cfg.port);
   ASC_setPresentationAddresses(params, localHost, peer.c_str());
   if (useTLS)
@@ -378,11 +378,13 @@ int main(int argc, char **argv)
         continue;
       }
       const DcmXfer target(pc.acceptedTransferSyntax);
-      dataset->chooseRepresentation(target.getXfer(), nullptr);
-      if (!dataset->canWriteXfer(target.getXfer()))
+      const OFCondition xc = dataset->chooseRepresentation(target.getXfer(),
+                                                           nullptr);
+      if (xc.bad() || !dataset->canWriteXfer(target.getXfer()))
       {
         failMessage(todo, id, env, std::string("cannot transcode ")
-                    + objXfer.getXferID() + " -> " + target.getXferID());
+                    + objXfer.getXferID() + " -> " + target.getXferID()
+                    + (xc.bad() ? std::string(": ") + xc.text() : ""));
         continue;
       }
     }
