@@ -136,6 +136,12 @@ int main(int argc, char **argv)
         return 100;
     }
   }
+  if (lifetimeDays <= 0)
+  {
+    // a non-positive lifetime would fail every queued message at once
+    std::fprintf(stderr, "dicomq-remote: -L must be a positive number of days\n");
+    return 100;
+  }
   if (optind + 1 != argc)
   {
     std::fprintf(stderr,

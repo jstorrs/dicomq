@@ -93,6 +93,13 @@ int main(int argc, char **argv)
         return 100;
     }
   }
+  if (graceHours < 0)
+  {
+    // a negative grace pushes the cutoff into the future, which would
+    // reap freshly written tmp/ and not-yet-committed objects
+    std::fprintf(stderr, "dicomq-clean: -g must not be negative\n");
+    return 100;
+  }
 
   const Spool sp(spoolArg);
   cutoff = time(nullptr) - graceHours * 3600;
