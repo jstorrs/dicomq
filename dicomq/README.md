@@ -101,6 +101,27 @@ touch $SPOOL/route/PACS1/hold      # freeze a destination; rm to thaw
 holds quarantined malformed messages. dicomq never deletes from either;
 inspect, then `dicomq-super requeue` or `rm`.
 
+## macOS
+
+Build against Homebrew's DCMTK (`brew install dcmtk`; point CMake at it
+with `-D CMAKE_PREFIX_PATH=$(brew --prefix)` if needed). Deployment
+units live in [launchd/](launchd/) — `org.dicomq.recv.plist` uses
+launchd's inetd-compatibility mode, which hands each connection to a
+fresh `dicomq-recv` on fd 0 just like systemd `Accept=yes`.
+
+Platform notes:
+
+- Durability uses `F_FULLFSYNC` on macOS (plain `fsync` only reaches
+  the drive cache there), falling back to `fsync` on filesystems that
+  don't support it.
+- APFS is case-insensitive by default: called AETs that differ only in
+  case map to the same `aet/` directory and share deliveries. The
+  reserved names (`tmp`, `new`, `todo`) are checked case-insensitively
+  everywhere, so the queue's own directories are safe regardless.
+- `dicomq-send` waits on the periodic scan (no inotify); delivery
+  latency is the scan interval (`-i`, default 10s) instead of
+  milliseconds.
+
 ## Test
 
 ```sh
