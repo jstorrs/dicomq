@@ -391,7 +391,7 @@ triggers `dicomq-remote <DEST>` when any of its messages are due, or
 when new messages arrive; one `dicomq-remote` runs per destination at a
 time (per-channel serialization, like qmail's).
 
-Two Postfix lessons bound the cost of this scheme:
+Three Postfix lessons bound the cost of this scheme:
 
 - **Destination-level backoff.** Per-message mtimes alone mean a down
   destination is reconnected once per due cohort per scan cycle. The
@@ -403,6 +403,23 @@ Two Postfix lessons bound the cost of this scheme:
   split — a `deferred/` sibling per destination holding not-yet-due
   messages, so the scheduler scans only a bounded active set. Recorded
   here so the v1 simplification is a decision, not an accident.
+- **Outbound concurrency is uncapped.** A *single* destination is
+  already treated gently: one `dicomq-remote` per destination at a time
+  (per-channel serialization), and within its one association objects
+  are C-STOREd serially — any one node sees a single, ordered stream,
+  never a parallel hammering. What is unbounded is concurrency *across*
+  destinations: each scan, `dicomq-send` forks one `dicomq-remote` for
+  every destination with due work, so the number of simultaneous agents
+  (and outbound associations) is bounded only by how many destinations
+  are configured. With a handful of destinations this is fine, and the
+  load it risks is on the *sending* host and its network, not on any
+  remote node. Beyond that, the known fixes are Postfix's
+  `default_destination_concurrency_limit` (a global cap on simultaneous
+  `dicomq-remote` agents) and, for pacing a large recovered backlog into
+  one fragile node, `default_destination_rate_delay` / a per-association
+  batch cap. Deliberately omitted in v1 (YAGNI until the destination
+  count grows); recorded here so adding it later is a planned step, not a
+  scramble.
 
 ## Process and privilege model
 
