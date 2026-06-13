@@ -50,9 +50,15 @@ bool copyFile(const std::string& src, const std::string& dst, std::string& err);
 time_t idTime(const std::string& id);
 
 // "2026-06-12T17:42:31Z" <-> time_t (UTC). parseIsoTime returns 0 on
-// failure.
+// failure (and tolerates a fractional-second field, which it ignores).
 std::string isoTime(time_t t);
 time_t parseIsoTime(const std::string& s);
+
+// Current UTC time to millisecond precision,
+// "2026-06-12T17:42:31.313Z" — for the informational "received" stamp,
+// matching the millisecond resolution of a message id. Operational
+// timestamps that are parsed back (status, attempts) use isoTime.
+std::string isoTimeMillis();
 
 // Free bytes on the filesystem holding path, or -1.
 long long freeBytes(const std::string& path);

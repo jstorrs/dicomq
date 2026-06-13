@@ -229,6 +229,21 @@ std::string isoTime(time_t t)
   return buf;
 }
 
+std::string isoTimeMillis()
+{
+  using namespace std::chrono;
+  const auto now = system_clock::now();
+  const std::time_t secs = system_clock::to_time_t(now);
+  const int ms = static_cast<int>(
+      duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000);
+  struct tm tm;
+  gmtime_r(&secs, &tm);
+  char buf[40];
+  const size_t n = strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
+  std::snprintf(buf + n, sizeof(buf) - n, ".%03dZ", ms);
+  return buf;
+}
+
 time_t parseIsoTime(const std::string& s)
 {
   struct tm tm;

@@ -132,7 +132,7 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
 
   Envelope env;
   env.add("id", id);
-  env.add("received", isoTime(time(nullptr)));
+  env.add("received", isoTimeMillis());
   env.add("peer", ctx->peer);
   env.add("calling-aet", ctx->callingAET);
   env.add("called-aet", ctx->calledAET);

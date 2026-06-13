@@ -88,7 +88,7 @@ int main(int argc, char **argv)
 
     Envelope env;
     env.add("id", id);
-    env.add("received", isoTime(time(nullptr)));
+    env.add("received", isoTimeMillis());
     env.add("peer", "local");
     env.add("calling-aet", callingAET);
     env.add("called-aet", calledAET);
