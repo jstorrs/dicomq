@@ -27,13 +27,27 @@ new_spool() {
   mkdir -p "$DICOMQ_SPOOL"/{queue/{tmp,todo},route,aet,dest,failed,hold,corrupt}
 }
 
-wait_listen() { # wait_listen <port> — passive poll, no connection made
+listening() { # listening <port> — passive check, no connection made
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | grep -q ":$1 "
+  elif command -v lsof >/dev/null 2>&1; then        # macOS/BSD
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  else
+    netstat -an 2>/dev/null | grep LISTEN | grep -q "[.:]$1 "
+  fi
+}
+
+wait_listen() { # wait_listen <port>
   for _ in $(seq 1 100); do
-    ss -tln 2>/dev/null | grep -q ":$1 " && return 0
+    listening "$1" && return 0
     sleep 0.1
   done
   return 1
 }
+
+nlinks() { ls -ld "$1" | awk '{print $2}'; }  # portable stat -c %h
+
+age_out() { touch -t 200001010000 "$@"; }     # older than any grace period
 
 # --- a minimal valid Part 10 test object (with pixels, so transcoding
 # --- to image-compression syntaxes is exercised for real) -----------------
@@ -74,12 +88,12 @@ check_not "inject refuses a non-DICOM file" "$BIN/dicomq-inject" -c X "$WORK/tes
 new_spool
 touch "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/orphan.dcm"
 touch "$DICOMQ_SPOOL/queue/todo/kept.dcm"; touch "$DICOMQ_SPOOL/queue/todo/kept.env"
-touch -d '2 days ago' "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/orphan.dcm"
+age_out "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/orphan.dcm"
 "$BIN/dicomq-clean" >/dev/null
 check "clean reaps stale tmp files"        test ! -e "$DICOMQ_SPOOL/queue/tmp/stale.dcm"
 check "clean reaps old orphan objects"     test ! -e "$DICOMQ_SPOOL/queue/todo/orphan.dcm"
 check "clean keeps committed messages"     test -e "$DICOMQ_SPOOL/queue/todo/kept.dcm"
-touch -d '2 days ago' "$DICOMQ_SPOOL/queue/todo/kept.dcm"
+age_out "$DICOMQ_SPOOL/queue/todo/kept.dcm"
 "$BIN/dicomq-clean" >/dev/null
 check "clean keeps old committed messages" test -e "$DICOMQ_SPOOL/queue/todo/kept.dcm"
 
@@ -90,7 +104,7 @@ ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
 MD="$DICOMQ_SPOOL/aet/ARCHIVE"
 check "local delivers the object"          "$BIN/dicomq-local" "$ID" "$MD"
 check "delivered object exists"            test -f "$MD/new/$ID.dcm"
-check "delivery is a hardlink"             test "$(stat -c %h "$MD/new/$ID.dcm")" = 2
+check "delivery is a hardlink"             test "$(nlinks "$MD/new/$ID.dcm")" = 2
 check "local is idempotent"                "$BIN/dicomq-local" "$ID" "$MD"
 check "local delivers the envelope on request" "$BIN/dicomq-local" "$ID" "$MD" env
 check "delivered envelope exists"          test -f "$MD/new/$ID.env"
@@ -125,7 +139,7 @@ check "fan-out delivers to the maildir"     test -f "$DICOMQ_SPOOL/aet/FAN/new/$
 check "fan-out delivers the envelope"       test -f "$DICOMQ_SPOOL/aet/FAN/new/$ID.env"
 check "fan-out routes to PACS1"             test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
 check "fan-out routes to PACS2"             test -f "$DICOMQ_SPOOL/route/PACS2/todo/$ID.env"
-check "fan-out object is hardlinked 3 ways" test "$(stat -c %h "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm")" = 3
+check "fan-out object is hardlinked 3 ways" test "$(nlinks "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm")" = 3
 check "fan-out dequeues from todo"          test ! -e "$DICOMQ_SPOOL/queue/todo/$ID.env"
 check "send respects hold flags (no agent spawned for held dest)" \
       test ! -e "$DICOMQ_SPOOL/route/PACS1/status"
