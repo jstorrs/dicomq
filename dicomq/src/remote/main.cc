@@ -278,15 +278,24 @@ int main(int argc, char **argv)
     proposeTS.push_back(UID_LittleEndianExplicitTransferSyntax);
     proposeTS.push_back(UID_LittleEndianImplicitTransferSyntax);
   }
+  // The association can carry at most 128 presentation contexts (odd ids
+  // 1..255). With many SOP classes in one batch the budget can run out
+  // before every class gets a context; classes left unproposed must be
+  // DEFERRED, not failed (a later, smaller batch will fit them), so
+  // remember which classes we actually proposed.
+  std::set<std::string> proposedSops;
   T_ASC_PresentationContextID pid = 1;
   for (const auto& sop : sopClasses)
   {
+    if (pid > 253)
+      break;  // 128-context PDU limit reached; remaining classes deferred
     for (const auto& ts : proposeTS)
     {
       if (pid > 253)
-        break;  // 127-context PDU limit; rare in practice, extras wait
+        break;
       const char *tsArr[] = { ts.c_str() };
       ASC_addPresentationContext(params, pid, sop.c_str(), tsArr, 1);
+      proposedSops.insert(sop);
       pid += 2;
     }
   }
@@ -336,8 +345,16 @@ int main(int argc, char **argv)
       presID = ASC_findAcceptedPresentationContextID(assoc, sopClass.c_str());
     if (presID == 0)
     {
-      failMessage(todo, id, env, "no presentation context accepted for "
-                  + sopClass);
+      // No usable context. Distinguish our own context-budget limit (we
+      // never proposed this class — defer so a later batch can carry it)
+      // from a destination that refused a class we did propose (a real,
+      // permanent rejection of that SOP class).
+      if (proposedSops.count(sopClass) == 0)
+        recordAttempt(todo, id, env, "deferred: presentation-context budget "
+                      "exhausted, " + sopClass + " not proposed this batch");
+      else
+        failMessage(todo, id, env, "no presentation context accepted for "
+                    + sopClass);
       continue;
     }
     T_ASC_PresentationContext pc;
