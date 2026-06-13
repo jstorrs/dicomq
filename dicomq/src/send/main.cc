@@ -36,6 +36,9 @@
 #include <poll.h>
 #include <sys/inotify.h>
 #endif
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 #include "common/envelope.h"
 #include "common/message.h"
@@ -64,23 +67,36 @@ static bool fileExists(const std::string& path)
   return stat(path.c_str(), &st) == 0;
 }
 
+static std::string selfExecutable()
+{
+#ifdef __APPLE__
+  char buf[PATH_MAX];
+  uint32_t size = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &size) == 0)
+    return buf;
+#else
+  char buf[PATH_MAX];
+  const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n > 0)
+  {
+    buf[n] = '\0';
+    return buf;
+  }
+#endif
+  return "";
+}
+
 // prefer the sibling binary (same directory as this executable) so the
 // suite works from a build tree; fall back to PATH
 static std::string siblingPath(const char *name)
 {
-  char self[PATH_MAX];
-  const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-  if (n > 0)
+  const std::string self = selfExecutable();
+  const size_t slash = self.rfind('/');
+  if (slash != std::string::npos)
   {
-    self[n] = '\0';
-    std::string dir(self);
-    const size_t slash = dir.rfind('/');
-    if (slash != std::string::npos)
-    {
-      const std::string candidate = dir.substr(0, slash + 1) + name;
-      if (fileExists(candidate))
-        return candidate;
-    }
+    const std::string candidate = self.substr(0, slash + 1) + name;
+    if (fileExists(candidate))
+      return candidate;
   }
   return name;  // execvp will search PATH
 }
