@@ -109,6 +109,35 @@ units live in [launchd/](launchd/) — `org.dicomq.recv.plist` uses
 launchd's inetd-compatibility mode, which hands each connection to a
 fresh `dicomq-recv` on fd 0 just like systemd `Accept=yes`.
 
+### Running as a regular user (no root)
+
+dicomq needs no privileges: the spool is ordinary files, the default
+port (11112) is unprivileged, and `dicomq-recv --listen` needs no
+socket supervisor. The quickest unprivileged setup is two terminal
+commands and a spool in your home directory:
+
+```sh
+export DICOMQ_SPOOL="$HOME/Library/Application Support/dicomq"
+# create the spool directories as in "Create a spool" above, then:
+dicomq-send &
+dicomq-recv --listen 11112
+```
+
+For something that survives logout/login, install the per-user launchd
+agents instead:
+
+```sh
+sh launchd/user/install.sh
+```
+
+This creates the spool, fills in [launchd/user/](launchd/user/) plists
+for your account, and loads them from `~/Library/LaunchAgents` — the
+same socket-activated, process-per-association setup as the system
+deployment, just in your user session. macOS will ask once to allow
+incoming connections. What you give up relative to the system
+deployment is only the two-user privilege separation (everything runs
+as you) and port 104; neither affects the delivery guarantees.
+
 Platform notes:
 
 - Durability uses `F_FULLFSYNC` on macOS (plain `fsync` only reaches
