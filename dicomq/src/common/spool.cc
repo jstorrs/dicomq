@@ -84,6 +84,19 @@ static std::string dirOf(const std::string& path)
   return path.substr(0, slash);
 }
 
+static bool flushToStableStorage(int fd)
+{
+#ifdef __APPLE__
+  // fsync(2) on macOS flushes only to the drive's cache; F_FULLFSYNC is
+  // the documented way to reach stable storage, and the deliver-before-
+  // acknowledge contract depends on that. Some filesystems (e.g. SMB)
+  // do not support it — fall back to fsync there.
+  if (fcntl(fd, F_FULLFSYNC) == 0)
+    return true;
+#endif
+  return fsync(fd) == 0;
+}
+
 bool fsyncPath(const std::string& path, std::string& err)
 {
   const int fd = open(path.c_str(), O_RDONLY);
@@ -92,7 +105,7 @@ bool fsyncPath(const std::string& path, std::string& err)
     err = "cannot open '" + path + "' for sync: " + strerror(errno);
     return false;
   }
-  if (fsync(fd) != 0)
+  if (!flushToStableStorage(fd))
   {
     err = "cannot sync '" + path + "': " + strerror(errno);
     close(fd);

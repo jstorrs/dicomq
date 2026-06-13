@@ -207,7 +207,15 @@ public:
       errorDetail += strerror(errno);
       return OFFalse;
     }
-    if (fsync(fd) != 0)
+    OFBool flushed = OFFalse;
+#ifdef __APPLE__
+    // macOS fsync(2) reaches only the drive cache; F_FULLFSYNC is the
+    // documented way to stable storage (unsupported on some filesystems,
+    // hence the fsync fallback)
+    if (fcntl(fd, F_FULLFSYNC) == 0)
+      flushed = OFTrue;
+#endif
+    if (!flushed && fsync(fd) != 0)
     {
       errorDetail = "cannot sync '" + path + "': ";
       errorDetail += strerror(errno);
