@@ -25,6 +25,12 @@ foreach(prog recv send local remote clean inject queue super)
   install(TARGETS dicomq-${prog} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endforeach()
 
+# Unit tests for the pure common helpers — paths the network integration
+# tests cannot reach (e.g. lossy classification of video syntaxes).
+add_executable(dicomq-unit-profile test/unit-profile.cc)
+target_link_libraries(dicomq-unit-profile PRIVATE dicomq-common)
+add_test(NAME dicomq-unit-profile COMMAND dicomq-unit-profile)
+
 add_test(NAME dicomq-integration
   COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/test/run-tests.sh"
                "$<TARGET_FILE_DIR:dicomq-send>")

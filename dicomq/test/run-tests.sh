@@ -84,6 +84,13 @@ check "injected object is byte-identical"  cmp -s "$WORK/test.dcm" "$DICOMQ_SPOO
 check "queue/tmp left empty"               test -z "$(ls -A "$DICOMQ_SPOOL/queue/tmp")"
 check_not "inject refuses a non-DICOM file" "$BIN/dicomq-inject" -c X "$WORK/test.dump"
 
+# --- unit: pure common helpers --------------------------------------------
+if [ -x "$BIN/dicomq-unit-profile" ]; then
+  check "unit: profile helpers" "$BIN/dicomq-unit-profile"
+else
+  echo "skip - unit-profile (binary not built)"
+fi
+
 # --- clean ----------------------------------------------------------------
 new_spool
 touch "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/orphan.dcm"

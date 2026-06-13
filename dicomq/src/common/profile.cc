@@ -87,8 +87,8 @@ bool isLossyTransferSyntaxUID(const std::string& uid)
   for (const char *u : lossy)
     if (uid == u)
       return true;
-  // all MPEG/HEVC video syntaxes are lossy
-  return uid.compare(0, 25, "1.2.840.10008.1.2.4.10") == 0;
+  // all MPEG/HEVC video syntaxes (1.2.840.10008.1.2.4.100..107) are lossy
+  return uid.rfind("1.2.840.10008.1.2.4.10", 0) == 0;
 }
 
 bool AcceptProfile::load(const std::string& path, AcceptProfile& p,
