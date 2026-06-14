@@ -296,26 +296,17 @@ static void maybeTrigger(const std::string& dest)
   }
 
   const time_t now = time(nullptr);
-  for (const auto& id : listIds(sp.routeTodo(dest)))
+  const std::string todo = sp.routeTodo(dest);
+  for (const auto& id : listIds(todo))
   {
-    // never-attempted messages are always due; attempted ones follow
-    // the backoff schedule keyed on the envelope copy's mtime
     Envelope env;
-    bool due = true;
-    if (Envelope::read(envPath(sp.routeTodo(dest), id), env, err)
-        && env.count("attempt") > 0)
-    {
-      struct stat st;
-      due = stat(envPath(sp.routeTodo(dest), id).c_str(), &st) == 0
-            && isDue(now, st.st_mtime, idTime(id));
-    }
-    if (due)
-    {
-      const pid_t pid = spawn("dicomq-remote", {dest});
-      if (pid > 0)
-        running[dest] = pid;
-      return;
-    }
+    if (Envelope::read(envPath(todo, id), env, err)
+        && !messageDue(todo, id, env, now))
+      continue;  // attempted and still backing off
+    const pid_t pid = spawn("dicomq-remote", {dest});
+    if (pid > 0)
+      running[dest] = pid;
+    return;
   }
 }
 

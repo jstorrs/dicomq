@@ -53,18 +53,12 @@ static QueueStats scan(const std::string& dir)
     const long age = static_cast<long>(now - idTime(id));
     if (age > q.oldest)
       q.oldest = age;
-    // never-attempted = due now; attempted = backoff schedule
+    // never-attempted = due now; attempted = backoff schedule. An
+    // unreadable envelope counts as due — listMessages will surface it.
     Envelope env;
     std::string err;
-    bool due = true;
-    if (Envelope::read(envPath(dir, id), env, err)
-        && env.count("attempt") > 0)
-    {
-      struct stat st;
-      due = stat(envPath(dir, id).c_str(), &st) == 0
-            && isDue(now, st.st_mtime, idTime(id));
-    }
-    if (due)
+    if (!Envelope::read(envPath(dir, id), env, err)
+        || messageDue(dir, id, env, now))
       q.due++;
   }
   return q;

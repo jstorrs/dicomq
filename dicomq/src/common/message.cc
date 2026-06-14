@@ -18,6 +18,16 @@ std::string envPath(const std::string& dir, const std::string& id)
   return dir + "/" + id + ".env";
 }
 
+bool messageDue(const std::string& dir, const std::string& id,
+                const Envelope& env, time_t now)
+{
+  if (env.count("attempt") == 0)
+    return true;  // never attempted: always due
+  struct stat st;
+  return stat(envPath(dir, id).c_str(), &st) == 0
+         && isDue(now, st.st_mtime, idTime(id));
+}
+
 static bool unlinkTolerant(const std::string& path, std::string& err)
 {
   if (unlink(path.c_str()) != 0 && errno != ENOENT)

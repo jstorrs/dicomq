@@ -15,6 +15,15 @@ namespace dicomq {
 std::string dcmPath(const std::string& dir, const std::string& id);
 std::string envPath(const std::string& dir, const std::string& id);
 
+// Whether message <id> in dir, whose already-parsed envelope is env, is
+// due for a delivery attempt at time now. A never-attempted message is
+// always due; an attempted one follows the backoff schedule keyed on the
+// envelope copy's mtime (so a vanished mtime reads as not-due). Callers
+// holding an unreadable envelope should treat the message as due and let
+// the failure surface when they act on it.
+bool messageDue(const std::string& dir, const std::string& id,
+                const Envelope& env, time_t now);
+
 // Remove a pair from dir: envelope first (uncommitting the message),
 // then the object. Missing files are tolerated — removal is idempotent.
 bool removePair(const std::string& dir, const std::string& id,

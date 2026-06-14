@@ -188,13 +188,8 @@ int main(int argc, char **argv)
       failMessage(todo, id, env, "queue lifetime exhausted");
       continue;
     }
-    // never-attempted messages are always due; attempted ones follow
-    // the backoff schedule keyed on the envelope copy's mtime
-    struct stat st;
-    if (env.count("attempt") > 0
-        && (stat(envPath(todo, id).c_str(), &st) != 0
-            || !isDue(now, st.st_mtime, idTime(id))))
-      continue;
+    if (!messageDue(todo, id, env, now))
+      continue;  // attempted and still backing off
     if (env.get("sop-class-uid").empty())
     {
       failMessage(todo, id, env, "envelope lacks sop-class-uid");
