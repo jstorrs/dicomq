@@ -23,3 +23,13 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Stage binaries
+        run: cmake --install build --prefix "$RUNNER_TEMP/dist"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: dicomq-macos-arm64
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
