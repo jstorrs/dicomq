@@ -63,6 +63,22 @@ struct DeliverInstruction {
 bool loadDeliver(const std::string& path,
                  std::vector<DeliverInstruction>& out, std::string& err);
 
+// aet/<AET>/group — opt-in study/series accumulation (DESIGN.md /
+// docs/study-mode.md). Absent ⇒ per-object delivery, the historical
+// behaviour. One line: "<mode> <seconds>", where mode is study|series
+// and seconds is the quiescence timeout T — a study/series directory is
+// sealed once it has been quiet (no new object) for that long.
+struct GroupConfig {
+  enum class Mode { None, Study, Series };
+  Mode mode = Mode::None;
+  long quiescenceSeconds = 0;
+
+  bool enabled() const { return mode != Mode::None; }
+
+  // Missing file ⇒ mode None (not an error).
+  static bool load(const std::string& path, GroupConfig& g, std::string& err);
+};
+
 // dest/<DEST>/remote — connection parameters (envelope-format file).
 struct RemoteConfig {
   std::string host;

@@ -221,6 +221,44 @@ bool loadDeliver(const std::string& path,
   return true;
 }
 
+bool GroupConfig::load(const std::string& path, GroupConfig& g, std::string& err)
+{
+  g = GroupConfig();
+  std::vector<std::string> lines;
+  bool missing = false;
+  if (!readProfileLines(path, lines, /*missingOk=*/true, missing, err))
+    return false;
+  if (missing)
+    return true;  // per-object delivery (mode None)
+  if (lines.size() != 1)
+  {
+    err = "'" + path + "' must hold exactly one '<mode> <seconds>' line";
+    return false;
+  }
+  const std::string& line = lines[0];
+  const size_t sp = line.find_first_of(" \t");
+  const std::string mode = line.substr(0, sp);
+  if (mode == "study")
+    g.mode = Mode::Study;
+  else if (mode == "series")
+    g.mode = Mode::Series;
+  else
+  {
+    err = "unknown group mode in '" + path + "': " + mode
+          + " (expected study or series)";
+    return false;
+  }
+  const std::string secs = sp == std::string::npos ? std::string()
+      : line.substr(line.find_first_not_of(" \t", sp));
+  g.quiescenceSeconds = atol(secs.c_str());
+  if (g.quiescenceSeconds <= 0)
+  {
+    err = "'" + path + "' needs a positive quiescence timeout in seconds";
+    return false;
+  }
+  return true;
+}
+
 bool RemoteConfig::load(const std::string& path, RemoteConfig& c,
                         std::string& err)
 {

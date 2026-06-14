@@ -8,7 +8,10 @@
 #include "common/profile.h"
 
 #include <cstdio>
+#include <fstream>
 #include <string>
+
+#include <unistd.h>
 
 using namespace dicomq;
 
@@ -65,6 +68,54 @@ int main()
   expectLossy("1.2.840.10008.1.2.4.102", true, "MPEG4 high");
   expectLossy("1.2.840.10008.1.2.4.104", true, "MPEG4 BD");
   expectLossy("1.2.840.10008.1.2.4.107", true, "HEVC main");
+
+  // GroupConfig parsing (aet/<AET>/group): study/series accumulation knob
+  {
+    const std::string tmp =
+        "/tmp/dicomq-group-test." + std::to_string(getpid());
+    auto put = [&](const std::string& body) {
+      std::ofstream o(tmp, std::ios::trunc);
+      o << body;
+    };
+    auto expect = [&](bool cond, const char* what) {
+      if (!cond)
+      {
+        std::fprintf(stderr, "FAIL group %s\n", what);
+        failures++;
+      }
+    };
+    std::string err;
+    GroupConfig g;
+
+    // missing file => mode None, not an error
+    expect(GroupConfig::load(tmp + ".absent", g, err) && !g.enabled(),
+           "missing file is per-object (None)");
+
+    put("study 120\n");
+    g = GroupConfig();
+    expect(GroupConfig::load(tmp, g, err)
+               && g.mode == GroupConfig::Mode::Study
+               && g.quiescenceSeconds == 120,
+           "study 120 parses");
+
+    put("series 90\n");
+    g = GroupConfig();
+    expect(GroupConfig::load(tmp, g, err)
+               && g.mode == GroupConfig::Mode::Series
+               && g.quiescenceSeconds == 90,
+           "series 90 parses");
+
+    put("bogus 5\n");
+    expect(!GroupConfig::load(tmp, g, err), "unknown mode is rejected");
+
+    put("study\n");
+    expect(!GroupConfig::load(tmp, g, err), "missing seconds is rejected");
+
+    put("study 0\n");
+    expect(!GroupConfig::load(tmp, g, err), "non-positive timeout is rejected");
+
+    unlink(tmp.c_str());
+  }
 
   if (failures == 0)
     std::printf("unit-profile: all checks passed\n");

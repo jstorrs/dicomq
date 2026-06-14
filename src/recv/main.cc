@@ -72,6 +72,7 @@ static void logmsg(const std::string& m)
 struct StoreContext {
   DcmFileFormat *ff;
   std::string callingAET, calledAET, peer;
+  GroupConfig group;  // study/series accumulation for this called AET
 };
 
 static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
@@ -111,6 +112,27 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
   meta->putAndInsertString(DCM_ReceivingApplicationEntityTitle,
                            ctx->calledAET.c_str());
 
+  const std::string aet = sanitizeAET(ctx->calledAET);
+
+  // study/series mode: this object joins accum/<AET>/<UID>/, keyed by its
+  // grouping UID, for dicomq-send to seal later. The grouping tag is
+  // mandatory in this mode — an object without it cannot be routed, so it
+  // is refused (like a SOP-class mismatch above), not silently misfiled.
+  std::string groupUID;
+  if (ctx->group.enabled())
+  {
+    const DcmTagKey key = ctx->group.mode == GroupConfig::Mode::Series
+        ? DCM_SeriesInstanceUID : DCM_StudyInstanceUID;
+    OFString u;
+    if ((*imageDataSet)->findAndGetOFString(key, u).bad() || u.empty())
+    {
+      logmsg("refusing an object with no grouping UID for " + ctx->calledAET);
+      rsp->DimseStatus = STATUS_STORE_Error_CannotUnderstand;
+      return;
+    }
+    groupUID = sanitizeAET(u.c_str());  // UIDs are digits and dots: safe path
+  }
+
   const E_TransferSyntax xfer = (*imageDataSet)->getOriginalXfer();
   const std::string id = generateId();
   const std::string tmpDcm = dcmPath(sp.queueTmp(), id);
@@ -127,22 +149,46 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
     return;
   }
 
-  // one atomic rename into the called AET's inbound queue is the commit;
-  // only after it is durable may the C-STORE response report success.
-  // The .dcm is the whole message: its file-meta header already carries
-  // the SOP UIDs, transfer syntax, and AETs that routing reads later.
-  const std::string aetDir = sp.queueTodoAET(sanitizeAET(ctx->calledAET));
-  if (!mkdirIfMissing(aetDir, err)
-      || !commitFile(tmpDcm, dcmPath(aetDir, id), err))
+  // one atomic rename is the commit point; only after it is durable may
+  // the C-STORE response report success. The .dcm is self-describing: its
+  // file-meta header carries the SOP UIDs, transfer syntax, and AETs that
+  // routing reads later.
+  bool committed = false;
+  std::string destDir;
+  if (groupUID.empty())
+  {
+    // per-object: straight into the called AET's inbound queue
+    destDir = sp.queueTodoAET(aet);
+    committed = mkdirIfMissing(destDir, err)
+                && commitFile(tmpDcm, dcmPath(destDir, id), err);
+  }
+  else
+  {
+    // accumulate: if dicomq-send sealed (renamed away) the accumulation
+    // directory between our mkdir and our rename, the rename fails — so
+    // recreate the directory and retry. The straggler simply starts the
+    // next batch; the bound stops a pathological loop.
+    for (int attempt = 0; attempt < 4 && !committed; attempt++)
+    {
+      destDir = sp.accumGroup(aet, groupUID);
+      if (!mkdirIfMissing(sp.accumRoot(), err)
+          || !mkdirIfMissing(sp.accumAET(aet), err)
+          || !mkdirIfMissing(destDir, err))
+        break;
+      committed = commitFile(tmpDcm, dcmPath(destDir, id), err);
+    }
+  }
+  if (!committed)
   {
     logmsg("cannot enqueue " + id + ": " + err);
     unlink(tmpDcm.c_str());
-    removeMessage(aetDir, id, err);
+    removeMessage(destDir, id, err);
     rsp->DimseStatus = STATUS_STORE_Refused_OutOfResources;
     return;
   }
-  logmsg("queued " + id + " from " + ctx->callingAET + " (" + ctx->peer
-         + ") for " + ctx->calledAET);
+  logmsg("queued " + id + (groupUID.empty() ? "" : " (" + groupUID + ")")
+         + " from " + ctx->callingAET + " (" + ctx->peer + ") for "
+         + ctx->calledAET);
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +240,16 @@ static int handleAssociation(T_ASC_Association *assoc)
   AcceptProfile profile;
   std::string err;
   if (!AcceptProfile::load(sp.aetDir(called) + "/accept", profile, err))
+  {
+    logmsg("rejecting association: " + err);
+    rejectAssociation(assoc, ASC_RESULT_REJECTEDTRANSIENT,
+                      ASC_SOURCE_SERVICEPROVIDER_PRESENTATION_RELATED,
+                      ASC_REASON_SP_PRES_TEMPORARYCONGESTION);
+    return 0;
+  }
+
+  GroupConfig group;
+  if (!GroupConfig::load(sp.aetDir(called) + "/group", group, err))
   {
     logmsg("rejecting association: " + err);
     rejectAssociation(assoc, ASC_RESULT_REJECTEDTRANSIENT,
@@ -255,6 +311,7 @@ static int handleAssociation(T_ASC_Association *assoc)
   ctx.callingAET = callingTitle;
   ctx.calledAET = calledTitle;
   ctx.peer = assoc->params->DULparams.callingPresentationAddress;
+  ctx.group = group;
 
   for (;;)
   {

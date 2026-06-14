@@ -196,11 +196,67 @@ static void waitForWork(long intervalSeconds)
 }
 #endif
 
+// seal quiescent study/series accumulation directories. A batch is sealed
+// purely on its directory mtime — the time its last object arrived — so
+// this opens no DICOM (the grouping was decided by dicomq-recv). One
+// atomic rename frees the UID rendezvous name and commits the batch as a
+// directory-message at once; a straggler arriving afterward simply starts
+// the next batch (docs/study-mode.md "the batch boundary is race-free").
+static void sweepAccum()
+{
+  const time_t now = time(nullptr);
+  for (const auto& aet : listSubdirs(sp.accumRoot()))
+  {
+    std::string err;
+    GroupConfig group;
+    if (!GroupConfig::load(sp.aetDir(aet) + "/group", group, err)
+        || !group.enabled())
+      continue;  // not (or no longer) a grouping AET: leave its dirs alone
+
+    for (const auto& uid : listSubdirs(sp.accumAET(aet)))
+    {
+      const std::string dir = sp.accumGroup(aet, uid);
+      struct stat st;
+      if (stat(dir.c_str(), &st) != 0)
+        continue;
+      if (now - st.st_mtime < group.quiescenceSeconds)
+        continue;  // still accumulating: quiet for less than T
+
+      const size_t n = listIds(dir).size();
+      if (n == 0)
+      {
+        rmdir(dir.c_str());  // empty and quiescent: tidy up, ignore failure
+        continue;
+      }
+
+      const std::string todoAet = sp.queueTodoAET(aet);
+      if (!mkdirIfMissing(todoAet, err))
+      {
+        logmsg("cannot seal " + aet + "/" + uid + ": " + err);
+        continue;
+      }
+      const std::string id = generateId();
+      if (rename(dir.c_str(), (todoAet + "/" + id).c_str()) != 0)
+      {
+        logmsg("cannot seal " + aet + "/" + uid + ": " + strerror(errno));
+        continue;
+      }
+      if (!fsyncPath(todoAet, err) || !fsyncPath(sp.accumAET(aet), err))
+        logmsg("sealed " + id + " but cannot fsync: " + err);
+      logmsg("sealed " + aet + "/" + uid + " as batch " + id + " ("
+             + std::to_string(n) + " objects)");
+    }
+  }
+}
+
 // route one message from queue/todo/<aet>/; on success it leaves there.
-// The called AET is the subdir name, so routing opens no DICOM.
-static void processMessage(const std::string& aet, const std::string& id)
+// The called AET is the subdir name, so routing opens no DICOM. A message
+// is a single .dcm or a sealed batch directory (msg.isBatch).
+static void processMessage(const std::string& aet, const Message& msg)
 {
   std::string err;
+  const std::string& id = msg.id;
+  const bool batch = msg.isBatch;
   const std::string srcDir = sp.queueTodoAET(aet);
   const std::string aetDir = sp.aetDir(aet);
 
@@ -209,7 +265,7 @@ static void processMessage(const std::string& aet, const std::string& id)
   if (!isDir(aetDir))
   {
     logmsg("failing " + id + ": unknown called AET '" + aet + "'");
-    if (!moveMessage(srcDir, sp.failedDir(), id, err))
+    if (!moveMessage(srcDir, sp.failedDir(), id, err, batch))
       logmsg("cannot fail " + id + ": " + err);
     return;
   }
@@ -234,6 +290,16 @@ static void processMessage(const std::string& aet, const std::string& id)
         return;
       }
     }
+    else if (batch)
+    {
+      // forward-path-first: maildir delivery of a batch (as new/<id>/) is
+      // not built yet, so defer rather than half-deliver. A study/series
+      // AET should use forward instructions in this build.
+      logmsg("deferring batch " + id
+             + ": maildir delivery of batches is not yet supported "
+               "(use forward)");
+      return;
+    }
     else if (!isDir(resolveMaildir(aetDir, in.arg) + "/new"))
     {
       logmsg("deferring " + id + ": maildir '"
@@ -246,9 +312,10 @@ static void processMessage(const std::string& aet, const std::string& id)
   {
     if (in.kind == DeliverInstruction::Kind::Forward)
     {
-      // hardlink the object into the destination queue; EEXIST means a
-      // crashed pass already routed it here (idempotent fan-out)
-      if (!linkMessage(srcDir, sp.routeTodo(in.arg), id, err))
+      // fan out into the destination queue — a hardlink for a single
+      // object, a hardlink-tree for a batch; already-present means a
+      // crashed pass routed it here (idempotent fan-out)
+      if (!linkMessage(srcDir, sp.routeTodo(in.arg), id, err, batch))
       {
         logmsg("deferring " + id + ": " + err);
         return;
@@ -267,7 +334,7 @@ static void processMessage(const std::string& aet, const std::string& id)
     }
   }
 
-  if (!removeMessage(srcDir, id, err))
+  if (!removeMessage(srcDir, id, err, batch))
     logmsg("routed " + id + " but cannot dequeue: " + err);
 }
 
@@ -289,8 +356,8 @@ static void reapAgents(bool block)
 
 static bool anyDue(const std::string& dir, int level, time_t now)
 {
-  for (const auto& id : listIds(dir))
-    if (messageDue(dir, id, level, now))
+  for (const auto& m : listMessages(dir))
+    if (messageDue(dir, m.id, level, now, m.isBatch))
       return true;
   return false;
 }
@@ -380,9 +447,10 @@ int main(int argc, char **argv)
   for (;;)
   {
     reapAgents(false);
+    sweepAccum();  // seal quiescent study/series batches before routing
     for (const auto& aet : listSubdirs(sp.queueTodo()))
-      for (const auto& id : listIds(sp.queueTodoAET(aet)))
-        processMessage(aet, id);
+      for (const auto& msg : listMessages(sp.queueTodoAET(aet)))
+        processMessage(aet, msg);
     for (const auto& dest : listSubdirs(sp.routeRoot()))
       maybeTrigger(dest);
     if (once)

@@ -76,6 +76,13 @@ EOF
 dump2dcm +te "$WORK/test.dump" "$WORK/test.dcm" 2>/dev/null \
   || { echo "cannot create test object (dump2dcm missing?)"; exit 1; }
 
+# a second object in the SAME study (0020,000d) but a different series and
+# SOP instance — for study-mode, where both must land in one batch
+sed -e 's#3.1.4.42.1#3.1.4.42.2#' -e 's#3.1.3.42.1#3.1.3.42.2#' \
+    "$WORK/test.dump" > "$WORK/test2.dump"
+dump2dcm +te "$WORK/test2.dump" "$WORK/test2.dcm" 2>/dev/null \
+  || { echo "cannot create second test object"; exit 1; }
+
 # --- inject ---------------------------------------------------------------
 new_spool
 ID=$("$BIN/dicomq-inject" -c ARCHIVE -a MOD1 "$WORK/test.dcm")
@@ -439,6 +446,117 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
 else
   echo "skip - end-to-end test (needs storescu and storescp)"
+fi
+
+# --- study-mode: recv accumulates -> send seals -> remote one batch --------
+# A study/series AET (aet/<AET>/group) collects objects in accum/<AET>/<UID>/
+# until quiescent, then dicomq-send seals the directory as one batch message
+# that dicomq-remote delivers over a single association. See docs/study-mode.md.
+if command -v storescu >/dev/null && command -v storescp >/dev/null; then
+  SRPORT=11187 SPPORT=11188
+  SUID=1_2_276_0_7230010_3_1_2_42_1     # sanitized StudyInstanceUID (.->_)
+  ndcm() { ls "$1"/*.dcm 2>/dev/null | wc -l | tr -d '[:space:]'; }
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/STUDYR"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1" \
+           "$DICOMQ_SPOOL/route/PACS1/todo" "$WORK/studypacs"
+  printf "host: localhost\nport: $SPPORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
+  printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/STUDYR/deliver"
+  # large T: natural quiescence never fires mid-test; we force it with age_out
+  printf 'study 3600\n' > "$DICOMQ_SPOOL/aet/STUDYR/group"
+
+  # both objects of one study arrive over a single association
+  "$BIN/dicomq-recv" --listen $SRPORT --once 2>/dev/null & RECV=$!
+  wait_listen $SRPORT
+  check "study-mode: recv accepts the study" \
+        storescu -aet MOD1 -aec STUDYR localhost $SRPORT "$WORK/test.dcm" "$WORK/test2.dcm"
+  wait $RECV
+  ACC="$DICOMQ_SPOOL/accum/STUDYR/$SUID"
+  check "study-mode: objects accumulate under accum/<AET>/<UID>/" \
+        test "$(ndcm "$ACC")" = 2
+  check "study-mode: nothing reaches queue/todo before sealing" \
+        test -z "$(find "$DICOMQ_SPOOL/queue/todo" -name '*.dcm')"
+
+  # not yet quiescent (T=3600): a send pass must not seal
+  "$BIN/dicomq-send" --once 2>/dev/null
+  check "study-mode: send does not seal before quiescence" test -d "$ACC"
+
+  # force quiescence; hold the destination so the sealed batch can be inspected
+  age_out "$ACC"
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  BATCH=$(ls "$DICOMQ_SPOOL/route/PACS1/todo" 2>/dev/null | head -1)
+  check "study-mode: sealing consumes the accumulation dir" test ! -e "$ACC"
+  check "study-mode: the sealed batch is a directory message" \
+        test -n "$BATCH" -a -d "$DICOMQ_SPOOL/route/PACS1/todo/$BATCH"
+  check "study-mode: the batch holds the whole study" \
+        test "$(ndcm "$DICOMQ_SPOOL/route/PACS1/todo/$BATCH")" = 2
+  check "study-mode: queue/todo drained after routing" \
+        test -z "$(find "$DICOMQ_SPOOL/queue/todo" -name '*.dcm')"
+
+  # deliver the held batch: one association carries the whole study
+  storescp -od "$WORK/studypacs" $SPPORT 2>/dev/null & SCP=$!
+  wait_listen $SPPORT
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "study-mode: remote delivers the whole study" \
+        test "$(ls -A "$WORK/studypacs" | wc -l | tr -d '[:space:]')" = 2
+  check "study-mode: remote drains the batch" \
+        test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+
+  # a straggler for the same study starts a fresh batch — no name collision
+  # with the already-shipped one (sealed batches are timestamped, not UIDs)
+  "$BIN/dicomq-recv" --listen $SRPORT --once 2>/dev/null & RECV=$!
+  wait_listen $SRPORT
+  storescu -aet MOD1 -aec STUDYR localhost $SRPORT "$WORK/test.dcm" >/dev/null 2>&1
+  wait $RECV
+  check "study-mode: a straggler starts a new accumulation" \
+        test "$(ndcm "$ACC")" = 1
+
+  # all-or-nothing: a rejected batch demotes as a whole. Fresh spool, a
+  # two-object study, and a destination policy (implicit-only, transcode
+  # never) that rejects the stored explicit objects.
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/STUDYR"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1" \
+           "$DICOMQ_SPOOL/route/PACS1/todo" "$DICOMQ_SPOOL/route/PACS1/retry/1" \
+           "$WORK/studypacs2"
+  printf "host: localhost\nport: $SPPORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
+  printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/STUDYR/deliver"
+  printf 'study 3600\n' > "$DICOMQ_SPOOL/aet/STUDYR/group"
+  printf 'ImplicitVRLittleEndian\ntranscode: never\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  "$BIN/dicomq-recv" --listen $SRPORT --once 2>/dev/null & RECV=$!
+  wait_listen $SRPORT
+  storescu -aet MOD1 -aec STUDYR localhost $SRPORT "$WORK/test.dcm" "$WORK/test2.dcm" >/dev/null 2>&1
+  wait $RECV
+  age_out "$DICOMQ_SPOOL/accum/STUDYR/$SUID"
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  storescp -od "$WORK/studypacs2" $SPPORT 2>/dev/null & SCP=$!
+  wait_listen $SPPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  DBATCH=$(ls "$DICOMQ_SPOOL/route/PACS1/retry/1" 2>/dev/null | head -1)
+  check "study-mode: a rejected batch demotes as a whole to retry/1" \
+        test -n "$DBATCH" -a "$(ndcm "$DICOMQ_SPOOL/route/PACS1/retry/1/$DBATCH")" = 2
+  check "study-mode: demotion empties todo" \
+        test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+
+  # a grouping AET refuses an object with no StudyInstanceUID
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/STUDYR"/{tmp,new}
+  printf 'study 3600\n' > "$DICOMQ_SPOOL/aet/STUDYR/group"
+  printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/STUDYR/deliver"
+  DENO="$WORK/nostudy.dump"
+  grep -v '0020,000d' "$WORK/test.dump" > "$DENO"
+  dump2dcm +te "$DENO" "$WORK/nostudy.dcm" 2>/dev/null
+  "$BIN/dicomq-recv" --listen $SRPORT --once 2>/dev/null & RECV=$!
+  wait_listen $SRPORT
+  check_not "study-mode: object with no grouping UID is refused" \
+        storescu -aet MOD1 -aec STUDYR localhost $SRPORT "$WORK/nostudy.dcm"
+  kill $RECV 2>/dev/null; wait $RECV 2>/dev/null
+else
+  echo "skip - study-mode test (needs storescu and storescp)"
 fi
 
 echo

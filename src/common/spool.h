@@ -29,6 +29,13 @@ struct Spool {
   std::string queueTmp() const { return root + "/queue/tmp"; }
   std::string queueTodo() const { return root + "/queue/todo"; }
   std::string queueTodoAET(const std::string& a) const { return root + "/queue/todo/" + a; }
+  // Study/series accumulation stage: objects of one study/series gather
+  // in accum/<AET>/<UID>/ (UID is the rendezvous key) until dicomq-send
+  // seals the directory into queue/todo/<AET>/<id>/. dicomq's to create.
+  std::string accumRoot() const { return root + "/accum"; }
+  std::string accumAET(const std::string& a) const { return root + "/accum/" + a; }
+  std::string accumGroup(const std::string& a, const std::string& uid) const
+      { return accumAET(a) + "/" + uid; }
   std::string routeRoot() const { return root + "/route"; }
   std::string routeDir(const std::string& d) const { return root + "/route/" + d; }
   std::string routeTodo(const std::string& d) const { return routeDir(d) + "/todo"; }

@@ -137,7 +137,9 @@ static std::vector<std::pair<std::string, int>> destDirs(const std::string& d)
   return dirs;
 }
 
-static void listMessages(const std::string& dest)
+// NOTE: batch (study/series) messages are not yet shown here — listing
+// them is a documented follow-up to the study-mode forward path.
+static void listDestMessages(const std::string& dest)
 {
   const time_t now = time(nullptr);
   for (const auto& d : destDirs(dest))
@@ -201,7 +203,7 @@ int main(int argc, char **argv)
 
   if (!destArg.empty())
   {
-    listMessages(destArg);
+    listDestMessages(destArg);
     return 0;
   }
 

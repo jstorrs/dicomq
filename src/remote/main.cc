@@ -80,12 +80,23 @@ using namespace dicomq;
 static Spool sp;
 static std::string destName;
 
-// a due message to deliver: where it sits, its retry rung, and the
-// routing fields read once from its file-meta header
+// one DICOM object to C-STORE, with the routing fields read once from its
+// file-meta header
+struct Object {
+  std::string path, sopClass, sopInstance, xferUID;
+};
+
+// a due message to deliver: where it sits, its retry rung, and its
+// objects — one for a single .dcm, many for a sealed study/series batch.
+// A batch delivers all-or-nothing: every object goes over one association,
+// and a single rejection demotes the whole batch (the destination dedups
+// the objects it already received on SOP Instance UID).
 struct WorkItem {
   std::string dir;
   int level;
-  std::string id, sopClass, sopInstance, xferUID;
+  std::string id;
+  bool isBatch;
+  std::vector<Object> objects;
 };
 
 static void logmsg(const std::string& m)
@@ -135,21 +146,36 @@ static void demote(const WorkItem& w, const std::string& reason)
   {
     logmsg("failing " + w.id + ": " + reason + " (no retry/"
            + std::to_string(next) + " rung)");
-    if (!moveMessage(w.dir, sp.failedDir(), w.id, err))
+    if (!moveMessage(w.dir, sp.failedDir(), w.id, err, w.isBatch))
       logmsg("cannot fail " + w.id + ": " + err);
     return;
   }
   logmsg(w.id + " -> retry/" + std::to_string(next) + ": " + reason);
-  const std::string tmp = sp.queueTmp() + "/" + w.id + ".retry"
-                          + std::to_string(getpid());
-  if (!copyFile(dcmPath(w.dir, w.id), tmp, err)
-      || !commitFile(tmp, dcmPath(nextDir, w.id), err))
+  // Land on the next rung with a fresh, private mtime (the backoff clock):
+  // a single object copies to a new inode; a batch hardlink-trees into a
+  // fresh directory whose own mtime is the clock (members share inodes),
+  // because the same message may be hardlinked into other destinations.
+  if (w.isBatch)
   {
-    logmsg("cannot demote " + w.id + ": " + err);
-    unlink(tmp.c_str());
-    return;
+    if (!linkBatchTree(w.dir, nextDir, w.id, err))
+    {
+      logmsg("cannot demote " + w.id + ": " + err);
+      return;
+    }
   }
-  if (!removeMessage(w.dir, w.id, err))
+  else
+  {
+    const std::string tmp = sp.queueTmp() + "/" + w.id + ".retry"
+                            + std::to_string(getpid());
+    if (!copyFile(dcmPath(w.dir, w.id), tmp, err)
+        || !commitFile(tmp, dcmPath(nextDir, w.id), err))
+    {
+      logmsg("cannot demote " + w.id + ": " + err);
+      unlink(tmp.c_str());
+      return;
+    }
+  }
+  if (!removeMessage(w.dir, w.id, err, w.isBatch))
     logmsg("demoted " + w.id + " but cannot remove source: " + err);
 }
 
@@ -197,35 +223,70 @@ int main(int argc, char **argv)
   std::vector<WorkItem> work;
   std::set<std::string> sopClasses;
 
+  // read the routing fields one object needs from its file-meta header
+  auto readObjectMeta = [](const std::string& path, Object& obj) -> bool {
+    DcmFileFormat ff;
+    if (ff.loadFile(path.c_str(), EXS_Unknown, EGL_noChange, DCM_MaxReadLength,
+                    ERM_metaOnly).bad())
+      return false;
+    DcmMetaInfo *m = ff.getMetaInfo();
+    OFString sc, si, ts;
+    if (!m
+        || m->findAndGetOFString(DCM_MediaStorageSOPClassUID, sc).bad()
+        || m->findAndGetOFString(DCM_MediaStorageSOPInstanceUID, si).bad()
+        || m->findAndGetOFString(DCM_TransferSyntaxUID, ts).bad()
+        || sc.empty() || si.empty() || ts.empty())
+      return false;
+    obj = {path, sc.c_str(), si.c_str(), ts.c_str()};
+    return true;
+  };
+
   auto gather = [&](const std::string& dir, int level) {
-    for (const auto& id : listIds(dir))
+    for (const auto& msg : listMessages(dir))
     {
-      if (!messageDue(dir, id, level, now))
+      if (!messageDue(dir, msg.id, level, now, msg.isBatch))
         continue;  // attempted and still backing off
-      DcmFileFormat ff;
-      if (ff.loadFile(dcmPath(dir, id).c_str(), EXS_Unknown, EGL_noChange,
-                      DCM_MaxReadLength, ERM_metaOnly).bad())
+      WorkItem item;
+      item.dir = dir;
+      item.level = level;
+      item.id = msg.id;
+      item.isBatch = msg.isBatch;
+      bool ok = true;
+      if (msg.isBatch)
       {
-        logmsg("quarantining " + id + ": cannot read file meta");
-        if (!moveMessage(dir, sp.corruptDir(), id, err))
-          logmsg("cannot quarantine " + id + ": " + err);
+        // a batch is a directory of <objid>.dcm; read every member
+        const std::string bdir = messagePath(dir, msg.id, true);
+        for (const auto& objid : listIds(bdir))
+        {
+          Object obj;
+          if (!readObjectMeta(dcmPath(bdir, objid), obj)) { ok = false; break; }
+          item.objects.push_back(obj);
+        }
+      }
+      else
+      {
+        Object obj;
+        if (readObjectMeta(dcmPath(dir, msg.id), obj))
+          item.objects.push_back(obj);
+        else
+          ok = false;
+      }
+      if (ok && item.objects.empty())
+      {
+        // a sealed batch should never be empty; if it is, drop it quietly
+        removeMessage(dir, msg.id, err, msg.isBatch);
         continue;
       }
-      DcmMetaInfo *m = ff.getMetaInfo();
-      OFString sc, si, ts;
-      if (!m
-          || m->findAndGetOFString(DCM_MediaStorageSOPClassUID, sc).bad()
-          || m->findAndGetOFString(DCM_MediaStorageSOPInstanceUID, si).bad()
-          || m->findAndGetOFString(DCM_TransferSyntaxUID, ts).bad()
-          || sc.empty() || si.empty() || ts.empty())
+      if (!ok)
       {
-        logmsg("quarantining " + id + ": no usable file meta header");
-        if (!moveMessage(dir, sp.corruptDir(), id, err))
-          logmsg("cannot quarantine " + id + ": " + err);
+        logmsg("quarantining " + msg.id + ": cannot read file meta");
+        if (!moveMessage(dir, sp.corruptDir(), msg.id, err, msg.isBatch))
+          logmsg("cannot quarantine " + msg.id + ": " + err);
         continue;
       }
-      work.push_back({dir, level, id, sc.c_str(), si.c_str(), ts.c_str()});
-      sopClasses.insert(sc.c_str());
+      for (const auto& o : item.objects)
+        sopClasses.insert(o.sopClass);
+      work.push_back(std::move(item));
     }
   };
   gather(sp.routeTodo(destName), 0);
@@ -303,13 +364,14 @@ int main(int argc, char **argv)
   if (proposeTS.empty())
   {
     for (const auto& w : work)
-    {
-      bool seen = false;
-      for (const auto& p : proposeTS)
-        seen = seen || p == w.xferUID;
-      if (!seen && !w.xferUID.empty())
-        proposeTS.push_back(w.xferUID);
-    }
+      for (const auto& o : w.objects)
+      {
+        bool seen = false;
+        for (const auto& p : proposeTS)
+          seen = seen || p == o.xferUID;
+        if (!seen && !o.xferUID.empty())
+          proposeTS.push_back(o.xferUID);
+      }
     proposeTS.push_back(UID_LittleEndianExplicitTransferSyntax);
     proposeTS.push_back(UID_LittleEndianImplicitTransferSyntax);
   }
@@ -353,115 +415,147 @@ int main(int argc, char **argv)
   bool connectionBroke = false;
   for (const auto& item : work)
   {
-    const std::string& sopClass = item.sopClass;
-    const std::string& sopInstance = item.sopInstance;
+    // A message delivers all-or-nothing: every object goes over this one
+    // association. A single object that is rejected or impossible to send
+    // demotes the whole message; an object whose SOP class we never got to
+    // propose defers the whole message to a later, smaller batch; an
+    // object that cannot be loaded quarantines the whole message. The
+    // destination dedups any objects of the message it already received.
+    bool itemFailed = false, deferItem = false, quarantined = false;
+    std::string failReason;
 
-    DcmFileFormat ff;
-    cond = ff.loadFile(dcmPath(item.dir, item.id).c_str());
-    if (cond.bad())
+    for (const auto& obj : item.objects)
     {
-      logmsg("quarantining " + item.id + ": " + cond.text());
-      if (!moveMessage(item.dir, sp.corruptDir(), item.id, err))
-        logmsg("cannot quarantine " + item.id + ": " + err);
-      continue;
-    }
-    DcmDataset *dataset = ff.getDataset();
-    const DcmXfer objXfer(dataset->getOriginalXfer());
-
-    // Note: the 3-arg lookup FALLS BACK to any context for the abstract
-    // syntax when no exact transfer syntax match exists, so the accepted
-    // TS must be compared explicitly — DIMSE_storeUser would otherwise
-    // convert silently, bypassing the transcode policy.
-    T_ASC_PresentationContextID presID =
-        ASC_findAcceptedPresentationContextID(assoc, sopClass.c_str(),
-                                              objXfer.getXferID());
-    if (presID == 0)
-      presID = ASC_findAcceptedPresentationContextID(assoc, sopClass.c_str());
-    if (presID == 0)
-    {
-      // No usable context. Distinguish our own context-budget limit (we
-      // never proposed this class — leave it untouched so a later batch
-      // carries it; a deferral must not consume a retry rung) from a
-      // destination that refused a class we did propose (a real,
-      // permanent rejection that climbs the ladder).
-      if (proposedSops.count(sopClass) == 0)
-        logmsg("deferred " + item.id + ": presentation-context budget "
-               "exhausted, " + sopClass + " not proposed this batch");
-      else
-        demote(item, "no presentation context accepted for " + sopClass);
-      continue;
-    }
-    T_ASC_PresentationContext pc;
-    ASC_findAcceptedPresentationContext(assoc->params, presID, &pc);
-    if (strcmp(pc.acceptedTransferSyntax, objXfer.getXferID()) != 0)
-    {
-      // stored syntax not accepted: transcode or fail, per policy
-      if (profile.transcode == ProposeProfile::Transcode::Never)
+      DcmFileFormat ff;
+      cond = ff.loadFile(obj.path.c_str());
+      if (cond.bad())
       {
-        demote(item, std::string("stored syntax ") + objXfer.getXferID()
-               + " not accepted and transcode is 'never'");
-        continue;
+        logmsg("quarantining " + item.id + ": " + cond.text());
+        if (!moveMessage(item.dir, sp.corruptDir(), item.id, err, item.isBatch))
+          logmsg("cannot quarantine " + item.id + ": " + err);
+        quarantined = true;
+        break;
       }
-      if (profile.transcode == ProposeProfile::Transcode::Lossless
-          && isLossyTransferSyntaxUID(pc.acceptedTransferSyntax))
+      DcmDataset *dataset = ff.getDataset();
+      const DcmXfer objXfer(dataset->getOriginalXfer());
+
+      // Note: the 3-arg lookup FALLS BACK to any context for the abstract
+      // syntax when no exact transfer syntax match exists, so the accepted
+      // TS must be compared explicitly — DIMSE_storeUser would otherwise
+      // convert silently, bypassing the transcode policy.
+      T_ASC_PresentationContextID presID =
+          ASC_findAcceptedPresentationContextID(assoc, obj.sopClass.c_str(),
+                                                objXfer.getXferID());
+      if (presID == 0)
+        presID = ASC_findAcceptedPresentationContextID(assoc,
+                                                       obj.sopClass.c_str());
+      if (presID == 0)
       {
-        demote(item, std::string("accepted syntax ")
-               + pc.acceptedTransferSyntax
-               + " is lossy and transcode is 'lossless'");
-        continue;
+        // No usable context. Distinguish our own context-budget limit (we
+        // never proposed this class — defer so a later batch carries it; a
+        // deferral must not consume a retry rung) from a destination that
+        // refused a class we did propose (a real, permanent rejection).
+        if (proposedSops.count(obj.sopClass) == 0)
+        {
+          logmsg("deferred " + item.id + ": presentation-context budget "
+                 "exhausted, " + obj.sopClass + " not proposed this batch");
+          deferItem = true;
+        }
+        else
+        {
+          itemFailed = true;
+          failReason = "no presentation context accepted for " + obj.sopClass;
+        }
+        break;
       }
-      const DcmXfer target(pc.acceptedTransferSyntax);
-      const OFCondition xc = dataset->chooseRepresentation(target.getXfer(),
-                                                           nullptr);
-      if (xc.bad() || !dataset->canWriteXfer(target.getXfer()))
+      T_ASC_PresentationContext pc;
+      ASC_findAcceptedPresentationContext(assoc->params, presID, &pc);
+      if (strcmp(pc.acceptedTransferSyntax, objXfer.getXferID()) != 0)
       {
-        demote(item, std::string("cannot transcode ")
-               + objXfer.getXferID() + " -> " + target.getXferID()
-               + (xc.bad() ? std::string(": ") + xc.text() : ""));
-        continue;
+        // stored syntax not accepted: transcode or fail, per policy
+        if (profile.transcode == ProposeProfile::Transcode::Never)
+        {
+          itemFailed = true;
+          failReason = std::string("stored syntax ") + objXfer.getXferID()
+                       + " not accepted and transcode is 'never'";
+          break;
+        }
+        if (profile.transcode == ProposeProfile::Transcode::Lossless
+            && isLossyTransferSyntaxUID(pc.acceptedTransferSyntax))
+        {
+          itemFailed = true;
+          failReason = std::string("accepted syntax ")
+                       + pc.acceptedTransferSyntax
+                       + " is lossy and transcode is 'lossless'";
+          break;
+        }
+        const DcmXfer target(pc.acceptedTransferSyntax);
+        const OFCondition xc = dataset->chooseRepresentation(target.getXfer(),
+                                                             nullptr);
+        if (xc.bad() || !dataset->canWriteXfer(target.getXfer()))
+        {
+          itemFailed = true;
+          failReason = std::string("cannot transcode ") + objXfer.getXferID()
+                       + " -> " + target.getXferID()
+                       + (xc.bad() ? std::string(": ") + xc.text() : "");
+          break;
+        }
+      }
+
+      T_DIMSE_C_StoreRQ req;
+      memset(&req, 0, sizeof(req));
+      req.MessageID = assoc->nextMsgID++;
+      OFStandard::strlcpy(req.AffectedSOPClassUID, obj.sopClass.c_str(),
+                          sizeof(req.AffectedSOPClassUID));
+      OFStandard::strlcpy(req.AffectedSOPInstanceUID, obj.sopInstance.c_str(),
+                          sizeof(req.AffectedSOPInstanceUID));
+      req.DataSetType = DIMSE_DATASET_PRESENT;
+      req.Priority = DIMSE_PRIORITY_MEDIUM;
+
+      T_DIMSE_C_StoreRSP rsp;
+      memset(&rsp, 0, sizeof(rsp));
+      DcmDataset *statusDetail = nullptr;
+      cond = DIMSE_storeUser(assoc, presID, &req, nullptr, dataset, nullptr,
+                             nullptr, DIMSE_BLOCKING, 0, &rsp, &statusDetail);
+      delete statusDetail;
+
+      if (cond.bad())
+      {
+        // mid-association breakage is destination state; messages stay
+        // where they are so nothing is double-penalized
+        recordConnectionFailure(cond.text());
+        connectionBroke = true;
+        break;
+      }
+      if (rsp.DimseStatus != STATUS_Success
+          && (rsp.DimseStatus & 0xf000) != 0xB000)  // warnings are delivered
+      {
+        char status[16];
+        snprintf(status, sizeof(status), "0x%04x", rsp.DimseStatus);
+        logmsg(item.id + " rejected with status " + status);
+        itemFailed = true;
+        failReason = std::string("rejected ") + status;
+        break;
       }
     }
 
-    T_DIMSE_C_StoreRQ req;
-    memset(&req, 0, sizeof(req));
-    req.MessageID = assoc->nextMsgID++;
-    OFStandard::strlcpy(req.AffectedSOPClassUID, sopClass.c_str(),
-                        sizeof(req.AffectedSOPClassUID));
-    OFStandard::strlcpy(req.AffectedSOPInstanceUID, sopInstance.c_str(),
-                        sizeof(req.AffectedSOPInstanceUID));
-    req.DataSetType = DIMSE_DATASET_PRESENT;
-    req.Priority = DIMSE_PRIORITY_MEDIUM;
-
-    T_DIMSE_C_StoreRSP rsp;
-    memset(&rsp, 0, sizeof(rsp));
-    DcmDataset *statusDetail = nullptr;
-    cond = DIMSE_storeUser(assoc, presID, &req, nullptr, dataset, nullptr,
-                           nullptr, DIMSE_BLOCKING, 0, &rsp, &statusDetail);
-    delete statusDetail;
-
-    if (cond.bad())
-    {
-      // mid-association breakage is destination state; messages stay
-      // where they are so nothing is double-penalized
-      recordConnectionFailure(cond.text());
-      connectionBroke = true;
+    if (connectionBroke)
       break;
-    }
-    if (rsp.DimseStatus == STATUS_Success
-        || (rsp.DimseStatus & 0xf000) == 0xB000)  // warnings are delivered
+    if (quarantined)
+      continue;  // the whole message was moved to corrupt/
+    if (deferItem)
+      continue;  // left in place for a later batch
+    if (itemFailed)
     {
-      if (!removeMessage(item.dir, item.id, err))
-        logmsg("delivered " + item.id + " but cannot dequeue: " + err);
-      else
-        logmsg("delivered " + item.id);
+      demote(item, failReason);
+      continue;
     }
+    if (!removeMessage(item.dir, item.id, err, item.isBatch))
+      logmsg("delivered " + item.id + " but cannot dequeue: " + err);
     else
-    {
-      char status[16];
-      snprintf(status, sizeof(status), "0x%04x", rsp.DimseStatus);
-      logmsg(item.id + " rejected with status " + status);
-      demote(item, std::string("rejected ") + status);
-    }
+      logmsg("delivered " + item.id
+             + (item.isBatch ? " (" + std::to_string(item.objects.size())
+                                      + " objects)" : ""));
   }
 
   if (!connectionBroke)
