@@ -1,79 +1,9 @@
-# storescp+
+# dicomq — operator guide
 
-`storescp+` is [DCMTK](https://dcmtk.org/)'s `storescp` (a DICOM C-STORE
-Storage Service Class Provider) with a Maildir/qmail-inspired delivery mode.
-It builds as a standalone project against an installed DCMTK.
+A qmail-inspired DICOM store-and-forward suite. [DESIGN.md](DESIGN.md)
+is the architecture contract; this file is how to run it.
 
-It is also the transitional home of **dicomq**, the qmail-inspired
-store-and-forward suite that will eventually replace it — see
-[dicomq/DESIGN.md](dicomq/DESIGN.md) for the architecture. All eight
-programs (`dicomq-recv`, `-send`, `-local`, `-remote`, `-clean`,
-`-inject`, `-queue`, `-super`) are implemented and covered by the
-integration suite in `dicomq/test/run-tests.sh`, including TLS,
-transcoding, and inotify-driven routing — see
-[dicomq/README.md](dicomq/README.md) for the operator guide.
-
-## The `--imagedir` delivery mode
-
-With `--imagedir`, received objects are delivered the way qmail delivers to a
-Maildir — written somewhere temporary, then atomically renamed into place —
-so a consumer watching the output directory never sees a partial file:
-
-1. Each incoming object is written to `<output-dir>/tmp/` under a unique name:
-
-   ```
-   tmp/[CalledAET].[CallingAET].[YYYYMMDDHHMMSSMMM].[PID].[COUNTER].[MODALITY].dcm
-   ```
-
-2. After the object has been received, written completely, and flushed
-   to stable storage (`fsync`), it is `rename(2)`d to its final
-   destination and the destination directory entry is flushed as well:
-
-   ```
-   [CalledAET]/[CallingAET].[YYYYMMDDHHMMSSMMM].[PID].[COUNTER].[MODALITY].dcm
-   ```
-
-   The destination directory is named after the Called AE Title if a writable
-   directory of that name exists under the output directory; otherwise
-   `new/` is used. This lets one receiver fan deliveries out to per-AET
-   directories simply by creating them.
-
-`storescp+` never creates directories: `<output-dir>/tmp/` and
-`<output-dir>/new/` must exist before it starts, as must any per-AET
-destination directories you want to receive into. It verifies at startup
-that `tmp/` and `new/` exist, are writable, and live on the same
-filesystem (atomic `rename(2)` cannot cross filesystems); per-AET
-directories on a different filesystem will cause those deliveries to be
-refused at store time.
-
-AE titles are sanitized before use in paths: trimmed, and anything other
-than alphanumerics and `-` replaced by `_` (an AET that sanitizes to the
-empty string becomes `_`). Because `.` is always replaced, the
-dot-separated filename fields are unambiguous. A Called AET that
-sanitizes to `tmp` (in any case) is never used as a destination
-directory; such deliveries fall back to `new/`. Filenames are unique
-across concurrent receivers by construction (timestamp + PID + per-process
-counter).
-
-Delivery semantics are qmail's: an object is delivered durably *before*
-the success C-STORE response is sent, and an object is never delivered
-when the response reports failure (the temporary file is removed, the
-sender keeps the object, and may retry). If delivery itself fails — for
-example the rename fails because `tmp/` and the destination are on
-different filesystems — the response reports failure rather than
-acknowledging an object that was not delivered. The result is
-at-least-once delivery: a crash between rename and response can deliver
-the same object twice, as two distinct files. Consumers that need
-exactly-once must deduplicate on SOP Instance UID.
-
-`--imagedir` conflicts with the stock filename/sorting/event options that it
-replaces (`--timenames`, `--sort-*`, `--exec-on-*`, `--rename-on-eostudy`,
-`--eostudy-timeout`, `--exec-sync`), and with `--ignore` and
-`--bit-preserving`, which bypass the delivery path.
-
-All other behavior and options are unchanged from stock `storescp`.
-
-## Building
+## Build
 
 Requires CMake ≥ 3.16 and DCMTK ≥ 3.6.8 with development headers
 (`libdcmtk-dev` on Debian/Ubuntu provides the CMake package config).
@@ -81,34 +11,165 @@ Requires CMake ≥ 3.16 and DCMTK ≥ 3.6.8 with development headers
 ```sh
 cmake -B build
 cmake --build build
-cmake --install build   # installs bin/storescp+
+cmake --install build   # installs the eight dicomq-* binaries
 ```
 
 If DCMTK is installed in a non-standard prefix, point CMake at it with
 `-D CMAKE_PREFIX_PATH=/path/to/dcmtk-prefix`.
 
-## Tracking upstream DCMTK
+## Create a spool
 
-`src/storescp+.cc` is a copy of DCMTK's `dcmnet/apps/storescp.cc` carrying a
-small patch (~12 hunks) that wires in the `ImageDirManager` class from
-`src/storescp+.h`, where all of the delivery logic lives.
-
-The `upstream` branch holds the pristine upstream file and nothing else.
-To move to a newer DCMTK:
+dicomq never creates directories — creating them *is* configuration:
 
 ```sh
-scripts/sync-upstream.sh /path/to/dcmtk-source   # commits to 'upstream'
-git merge upstream                               # replays our patch on top
+SPOOL=/var/spool/dicomq
+mkdir -p $SPOOL/{queue/{tmp,todo},route,aet,dest,failed,hold,corrupt}
 ```
 
-To see the full local delta at any time:
+Every program takes `-s <spool>` or honours `$DICOMQ_SPOOL`
+(default `/var/spool/dicomq`). The spool must be one filesystem,
+not NFS.
+
+## Accept a Called AE Title
 
 ```sh
-git diff upstream main -- src/storescp+.cc
+mkdir -p $SPOOL/aet/ARCHIVE/{tmp,new}
 ```
 
-## License
+That's it: associations addressed to `ARCHIVE` are now accepted, and
+objects land in `aet/ARCHIVE/new/` (Maildir-style — consumers watch
+`new/`, may move or delete files, must never modify them in place).
+Optional per-AET files:
 
-Derived from DCMTK, Copyright OFFIS e.V. — see [COPYRIGHT](COPYRIGHT) for
-the BSD-style license terms, which also apply to this project's
-modifications.
+```sh
+# inbound transfer syntax preference, most preferred first ("*" = all)
+cat > $SPOOL/aet/ARCHIVE/accept <<EOF
+JPEGLSLossless
+ExplicitVRLittleEndian
+ImplicitVRLittleEndian
+EOF
+
+# routing instructions (default when absent: "maildir ./")
+cat > $SPOOL/aet/ARCHIVE/deliver <<EOF
+maildir ./ env
+forward PACS1
+EOF
+```
+
+## Define a forwarding destination
+
+```sh
+mkdir -p $SPOOL/dest/PACS1 $SPOOL/route/PACS1/todo
+cat > $SPOOL/dest/PACS1/remote <<EOF
+host: pacs1.example.org
+port: 11112
+aet: PACS1
+EOF
+cat > $SPOOL/dest/PACS1/propose <<EOF
+JPEGLSLossless
+ExplicitVRLittleEndian
+transcode: lossless        # never | lossless | as-needed
+EOF
+```
+
+## Run
+
+```sh
+dicomq-send &                      # the queue runner (or systemd, below)
+dicomq-recv --listen 11112         # small sites / testing
+```
+
+For production, run one `dicomq-recv` per association under systemd
+socket activation — unit files are in [systemd/](systemd/): install
+`dicomq-recv.socket`, `dicomq-recv@.service`, `dicomq-send.service`,
+and the `dicomq-clean` timer; create the `dicomq` and `dicomq-recv`
+users. Local submission and re-queueing use `dicomq-inject -c <aet>
+<file.dcm>...`.
+
+## TLS
+
+```sh
+mkdir $SPOOL/tls                    # inbound: key.pem + cert.pem,
+cp server.key $SPOOL/tls/key.pem    # optional ca.pem to require and
+cp server.pem $SPOOL/tls/cert.pem   # verify client certificates
+dicomq-recv --listen 11112 --tls
+
+mkdir $SPOOL/dest/PACS1/tls         # outbound: existence enables TLS;
+cp ca.pem $SPOOL/dest/PACS1/tls/    # ca.pem verifies the server, and
+                                    # key.pem+cert.pem (optional)
+                                    # authenticate us
+```
+
+Both sides use the DICOM BCP 195 profile.
+
+## Operate
+
+```sh
+dicomq-queue                       # what is queued where, ages, backoff
+dicomq-queue PACS1                 # per-message detail for a destination
+dicomq-super hold|release|requeue|fail <id>
+touch $SPOOL/route/PACS1/hold      # freeze a destination; rm to thaw
+```
+
+`failed/` is the bounce pile — point your alerting at it. `corrupt/`
+holds quarantined malformed messages. dicomq never deletes from either;
+inspect, then `dicomq-super requeue` or `rm`.
+
+## macOS
+
+Build against Homebrew's DCMTK (`brew install dcmtk`; point CMake at it
+with `-D CMAKE_PREFIX_PATH=$(brew --prefix)` if needed). Deployment
+units live in [launchd/](launchd/) — `org.dicomq.recv.plist` uses
+launchd's inetd-compatibility mode, which hands each connection to a
+fresh `dicomq-recv` on fd 0 just like systemd `Accept=yes`.
+
+### Running as a regular user (no root)
+
+dicomq needs no privileges: the spool is ordinary files, the default
+port (11112) is unprivileged, and `dicomq-recv --listen` needs no
+socket supervisor. The quickest unprivileged setup is two terminal
+commands and a spool in your home directory:
+
+```sh
+export DICOMQ_SPOOL="$HOME/Library/Application Support/dicomq"
+# create the spool directories as in "Create a spool" above, then:
+dicomq-send &
+dicomq-recv --listen 11112
+```
+
+For something that survives logout/login, install the per-user launchd
+agents instead:
+
+```sh
+sh launchd/user/install.sh
+```
+
+This creates the spool, fills in [launchd/user/](launchd/user/) plists
+for your account, and loads them from `~/Library/LaunchAgents` — the
+same socket-activated, process-per-association setup as the system
+deployment, just in your user session. macOS will ask once to allow
+incoming connections. What you give up relative to the system
+deployment is only the two-user privilege separation (everything runs
+as you) and port 104; neither affects the delivery guarantees.
+
+Platform notes:
+
+- Durability uses `F_FULLFSYNC` on macOS (plain `fsync` only reaches
+  the drive cache there), falling back to `fsync` on filesystems that
+  don't support it.
+- APFS is case-insensitive by default: called AETs that differ only in
+  case map to the same `aet/` directory and share deliveries. The
+  reserved names (`tmp`, `new`, `todo`) are checked case-insensitively
+  everywhere, so the queue's own directories are safe regardless.
+- `dicomq-send` waits on the periodic scan (no inotify); delivery
+  latency is the scan interval (`-i`, default 10s) instead of
+  milliseconds.
+
+## Test
+
+```sh
+bash test/run-tests.sh <bindir>    # or: ctest --test-dir <builddir>
+```
+
+The integration suite drives the real binaries against a throwaway
+spool, including network legs against DCMTK's storescu/storescp.

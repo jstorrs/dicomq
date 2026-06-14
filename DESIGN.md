@@ -462,21 +462,14 @@ Three Postfix lessons bound the cost of this scheme:
 | output post-processing (`--write-xfer-*`, padding, group length…) | objects are stored as received; conversion happens at forwarding time per destination profile |
 | AE title in filename | envelope file |
 
-## Transition
+## Lineage
 
-`storescp+` (the patched DCMTK storescp in this repository) remains the
-production receiver while dicomq grows. Its `--imagedir` mode is the
-prototype of `dicomq-recv` + default-maildir delivery, and its delivery
-invariants (fsync→rename→fsync-dir before ack, refuse on failure) carry
-over verbatim. The expected order of work:
-
-1. `common/` spool primitives + `dicomq-inject` + `dicomq-clean`
-   (testable without any DICOM networking)
-2. `dicomq-send` + `dicomq-local` (the queue core, still no networking)
-3. `dicomq-queue` + `dicomq-super` (operability before the network: the
-   queue core is testable and inspectable from the shell)
-4. `dicomq-recv` (DCMTK association handling; replaces storescp+)
-5. `dicomq-remote` + transcoding profiles (new capability)
+dicomq grew out of `storescp+`, a patched DCMTK `storescp` whose
+`--imagedir` mode was the prototype of `dicomq-recv` + default-maildir
+delivery. Its delivery invariants (fsync→rename→fsync-dir before ack,
+refuse on failure) carry over verbatim into `dicomq-recv`. storescp+ has
+since been removed; `dicomq-recv` is the receiver and all eight programs
+are implemented and covered by the integration suite.
 
 ## Open questions
 
