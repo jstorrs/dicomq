@@ -460,7 +460,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   mkdir -p "$DICOMQ_SPOOL/aet/STUDYR"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1" \
            "$DICOMQ_SPOOL/route/PACS1/todo" "$WORK/studypacs"
   printf "host: localhost\nport: $SPPORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
-  printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/STUDYR/deliver"
+  printf 'maildir ./\nforward PACS1\n' > "$DICOMQ_SPOOL/aet/STUDYR/deliver"
   # large T: natural quiescence never fires mid-test; we force it with age_out
   printf 'study 3600\n' > "$DICOMQ_SPOOL/aet/STUDYR/group"
 
@@ -490,6 +490,12 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
         test -n "$BATCH" -a -d "$DICOMQ_SPOOL/route/PACS1/todo/$BATCH"
   check "study-mode: the batch holds the whole study" \
         test "$(ndcm "$DICOMQ_SPOOL/route/PACS1/todo/$BATCH")" = 2
+  check "study-mode: maildir delivery is an atomic new/<id>/ subdir" \
+        test -d "$DICOMQ_SPOOL/aet/STUDYR/new/$BATCH"
+  check "study-mode: the maildir batch holds the whole study" \
+        test "$(ndcm "$DICOMQ_SPOOL/aet/STUDYR/new/$BATCH")" = 2
+  check "study-mode: no staging left in the maildir tmp/" \
+        test -z "$(ls -A "$DICOMQ_SPOOL/aet/STUDYR/tmp")"
   check "study-mode: queue/todo drained after routing" \
         test -z "$(find "$DICOMQ_SPOOL/queue/todo" -name '*.dcm')"
 
@@ -541,6 +547,23 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
         test -n "$DBATCH" -a "$(ndcm "$DICOMQ_SPOOL/route/PACS1/retry/1/$DBATCH")" = 2
   check "study-mode: demotion empties todo" \
         test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+
+  # queue + ctl treat the batch (now in retry/1) as one message
+  check "study-mode: queue lists a batch with its object count" \
+        grep -q "$DBATCH.*batch: 2 objects" <<<"$("$BIN/dicomq-queue" PACS1)"
+  "$BIN/dicomq-ctl" hold "$DBATCH" >/dev/null
+  check "study-mode: ctl holds a batch directory" \
+        test -d "$DICOMQ_SPOOL/hold/route/PACS1/retry/1/$DBATCH"
+  check "study-mode: hold removes the batch from its origin" \
+        test ! -e "$DICOMQ_SPOOL/route/PACS1/retry/1/$DBATCH"
+  "$BIN/dicomq-ctl" release "$DBATCH" >/dev/null
+  check "study-mode: ctl releases a batch to its origin" \
+        test -d "$DICOMQ_SPOOL/route/PACS1/retry/1/$DBATCH"
+  "$BIN/dicomq-ctl" requeue "$DBATCH" >/dev/null
+  check "study-mode: ctl requeues a batch to its AET queue" \
+        test -d "$DICOMQ_SPOOL/queue/todo/STUDYR/$DBATCH"
+  "$BIN/dicomq-ctl" fail "$DBATCH" "operator says no" >/dev/null
+  check "study-mode: ctl fails a batch" test -d "$DICOMQ_SPOOL/failed/$DBATCH"
 
   # a grouping AET refuses an object with no StudyInstanceUID
   new_spool

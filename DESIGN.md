@@ -79,7 +79,13 @@ Default root `/var/spool/dicomq`, overridable with `$DICOMQ_SPOOL` (and a
 queue/
   tmp/                 # in-progress writes; never read by consumers
   todo/
-    <CALLEDAET>/       # committed inbound objects, keyed by called AET
+    <CALLEDAET>/       # committed inbound messages, keyed by called AET —
+                       # each an <id>.dcm object or a sealed <id>/ batch
+accum/                 # study/series-mode only (docs/study-mode.md)
+  <CALLEDAET>/
+    <UID>/             # objects of one study/series accumulating, keyed by
+                       # Study/SeriesInstanceUID, until dicomq-send seals
+                       # the directory into queue/todo/<AET>/<id>/
 route/
   <DEST>/
     todo/              # objects queued for <DEST>, never attempted
@@ -102,9 +108,10 @@ corrupt/               # quarantined malformed objects
 
 dicomq never creates `aet/`, `dest/`, or `route/<DEST>/` entries —
 creating them **is** configuration, done by the operator. The per-AET
-`queue/todo/<AET>/` and per-rung `route/<DEST>/retry/<k>/` leaves,
-`failed/`, `hold/`, `corrupt/`, route `status` files, and the contents
-of maildirs are dicomq's to write.
+`queue/todo/<AET>/` and per-rung `route/<DEST>/retry/<k>/` leaves, the
+`accum/<AET>/<UID>/` accumulation directories, `failed/`, `hold/`,
+`corrupt/`, route `status` files, and the contents of maildirs are
+dicomq's to write.
 
 Directory names under `aet/` (and `queue/todo/`) are *sanitized* AE
 titles: trimmed, alphanumerics and `-` kept, everything else replaced by
@@ -125,6 +132,16 @@ A message is a single file:
 construction, lexically ordered by receive time within a process. The
 receive time is recoverable from the id; everything else routing needs
 is in the object's file-meta header (see below). There is no sidecar.
+
+In study/series mode a message is instead a **batch** — a directory
+`<id>/` of `<objid>.dcm` objects that `dicomq-recv` accumulated and
+`dicomq-send` sealed (docs/study-mode.md). It flows through the same
+queues and transitions as a single object — the only difference is that
+the leaf is a directory, so a move is a directory `rename(2)` (still
+atomic) and fan-out / copy-on-demote hardlink-tree the directory: the new
+directory's own mtime is the private retry-backoff clock while its members
+share inodes. `dicomq-remote` delivers a batch over one association,
+all-or-nothing.
 
 Two things make a message self-describing without one:
 
@@ -224,7 +241,11 @@ crash residue is an un-renamed `queue/tmp/` write, reaped by
 3. send C-STORE success
 
 Any failure: remove the tmp file, answer with a refused status; the
-sender keeps the object.
+sender keeps the object. In study/series mode (`aet/<AET>/group`) step 2
+instead renames into `accum/<called-aet>/<UID>/`, recreating that
+directory and retrying if `dicomq-send` sealed it between the `mkdir` and
+the rename (docs/study-mode.md); an object lacking the grouping UID is
+refused, like a SOP-class mismatch.
 
 **Route** (`dicomq-send`, per object in `queue/todo/<AET>/`, opening no
 DICOM — the called AET is the subdirectory name):
@@ -330,6 +351,26 @@ The queue core never executes user code; a crashed filter loses nothing
 because both sides are ordinary queue transitions; and the filter's
 output is a first-class message with its own retry schedule and failure
 handling.
+
+### Study/series accumulation: `aet/<AET>/group`
+
+By default a message is one object. An optional per-AET `group` file opts
+that called AET into delivering a whole study or series atomically:
+
+```
+study 120          # accumulate by StudyInstanceUID, seal after 120s quiet
+# or: series 90    # accumulate by SeriesInstanceUID, seal after 90s quiet
+```
+
+`dicomq-recv` then writes each object into `accum/<AET>/<UID>/` keyed by
+the grouping UID instead of committing it per-object; `dicomq-send` seals
+a directory once it has been quiet for the timeout (its mtime — the last
+arrival — is the clock) with one atomic rename into
+`queue/todo/<AET>/<id>/`, after which it routes like any message. This is
+quiescence batching, not end-of-study detection: a late object simply
+starts the next batch, and consumers reconcile on Study/Series and SOP
+Instance UID. The full rationale, the race-free seal, and the deferred
+knobs (max-age cap, per-AET overrides) are in docs/study-mode.md.
 
 ## Transfer syntax profiles
 
@@ -480,9 +521,9 @@ Three Postfix lessons bound the cost of this scheme:
 
 | storescp feature | replacement |
 |---|---|
-| `--exec-on-reception`, `--exec-on-eostudy`, `--exec-sync` | consumers watch maildir `new/`; transforms use filter re-injection (see "Filters"); study grouping is the consumer's concern (the queue is per-object by design) |
+| `--exec-on-reception`, `--exec-on-eostudy`, `--exec-sync` | consumers watch maildir `new/`; transforms use filter re-injection (see "Filters"); study grouping, when wanted, is the opt-in study/series mode (`aet/<AET>/group`) rather than per-consumer logic |
 | `--sort-conc-studies`, `--sort-on-*`, `--timenames`, `--unique-filenames` | spool naming + per-AET maildirs |
-| `--rename-on-eostudy`, `--eostudy-timeout` | gone; "end of study" is not an event a per-object receiver can know |
+| `--rename-on-eostudy`, `--eostudy-timeout` | study/series mode (`aet/<AET>/group`, docs/study-mode.md): not end-of-study detection (unknowable to a receiver), but quiescence batching that delivers a whole study/series atomically |
 | `--fork` / `--single-process` / `--inetd` | socket supervisor, one process per association |
 | `--prefer-*` (20 options) | `aet/<AET>/accept` profiles |
 | `--config-file` association profiles | same |

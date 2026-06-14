@@ -290,16 +290,6 @@ static void processMessage(const std::string& aet, const Message& msg)
         return;
       }
     }
-    else if (batch)
-    {
-      // forward-path-first: maildir delivery of a batch (as new/<id>/) is
-      // not built yet, so defer rather than half-deliver. A study/series
-      // AET should use forward instructions in this build.
-      logmsg("deferring batch " + id
-             + ": maildir delivery of batches is not yet supported "
-               "(use forward)");
-      return;
-    }
     else if (!isDir(resolveMaildir(aetDir, in.arg) + "/new"))
     {
       logmsg("deferring " + id + ": maildir '"

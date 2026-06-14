@@ -1,12 +1,13 @@
 # dicomq — study-mode / series-mode (design note)
 
-**Status: forward path implemented (June 2026).** The receive →
-accumulate → seal → forward path is built and covered by the integration
-suite: `dicomq-recv` accumulates, `dicomq-send` seals on quiescence, and
-`dicomq-remote` delivers each sealed batch over one association. Deferred
-to a follow-up (each noted inline below): local **maildir** delivery of a
-batch, and batch display/surgery in `dicomq-queue` / `dicomq-ctl`. The
-config knob is `aet/<AET>/group` (see "Configuration").
+**Status: implemented (June 2026).** The full path is built and covered
+by the integration suite: `dicomq-recv` accumulates, `dicomq-send` seals
+on quiescence and routes, `dicomq-remote` delivers each batch over one
+association (all-or-nothing), `dicomq-local` delivers a batch atomically
+as `new/<id>/`, and `dicomq-queue` / `dicomq-ctl` show and operate on
+batches. The config knob is `aet/<AET>/group` (see "Configuration").
+Deferred by design (not yet needed): a max-age cap and per-AET overrides
+of a global default — see "Deliberately deferred".
 
 ## What it is
 
@@ -37,10 +38,9 @@ study 120          # accumulate by StudyInstanceUID, seal after 120s quiet
 
 Absent ⇒ per-object delivery, the historical behaviour. Both `dicomq-recv`
 (to bucket by the grouping UID) and `dicomq-send` (to read the timeout T)
-read this file. In this build a grouping AET should use `forward`
-instructions in its `deliver` file; `maildir` delivery of a batch is the
-deferred follow-up, so `dicomq-send` defers (does not deliver) a batch
-that hits a `maildir` instruction. An object that lacks the grouping tag
+read this file. A grouping AET's `deliver` file works as usual: `forward`
+sends the whole batch over one association, and `maildir` delivers it as
+an atomic `new/<id>/` subdirectory. An object that lacks the grouping tag
 is refused at receive time (it cannot be routed), like a SOP-class
 mismatch.
 
@@ -252,8 +252,12 @@ model — each is a read-time refinement.
 
 ## Relationship to `DESIGN.md`
 
-When this is built, the storescp pruning table in `DESIGN.md`
-(`--rename-on-eostudy` / `--eostudy-timeout` → "gone") should be updated
-to point here: end-of-study is still not detected, but quiescence-batched
-delivery is offered as an opt-in receive mode for consumers that want
+`DESIGN.md` documents this mode: `accum/` is in the spool layout, the
+"Messages" section covers the batch (directory) form, the Receive commit
+protocol notes the `accum/` path, "Routing instructions" has a
+"Study/series accumulation: `aet/<AET>/group`" subsection, and the
+storescp pruning table rows for `--rename-on-eostudy` /
+`--eostudy-timeout` (and `--exec-on-eostudy`) now point at this mode
+rather than calling it "gone". End-of-study is still not detected;
+quiescence batching is an opt-in receive mode for consumers that want
 atomic studies/series.

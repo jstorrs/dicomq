@@ -62,17 +62,18 @@ struct QueueStats {
   long oldest = -1;
 };
 
-// Fold the messages in dir (sitting at retry rung `level`) into q.
+// Fold the messages in dir (sitting at retry rung `level`) into q. A batch
+// counts as one message (its objects are one study/series unit).
 static void scanInto(QueueStats& q, const std::string& dir, int level,
                      time_t now)
 {
-  for (const auto& id : listIds(dir))
+  for (const auto& m : listMessages(dir))
   {
     q.count++;
-    const long age = static_cast<long>(now - idTime(id));
+    const long age = static_cast<long>(now - idTime(m.id));
     if (age > q.oldest)
       q.oldest = age;
-    if (messageDue(dir, id, level, now))
+    if (messageDue(dir, m.id, level, now, m.isBatch))
       q.due++;
   }
 }
@@ -137,19 +138,28 @@ static std::vector<std::pair<std::string, int>> destDirs(const std::string& d)
   return dirs;
 }
 
-// NOTE: batch (study/series) messages are not yet shown here — listing
-// them is a documented follow-up to the study-mode forward path.
 static void listDestMessages(const std::string& dest)
 {
   const time_t now = time(nullptr);
   for (const auto& d : destDirs(dest))
-    for (const auto& id : listIds(d.first))
+    for (const auto& m : listMessages(d.first))
     {
-      std::string from = "?", to = "?";
-      readAETs(dcmPath(d.first, id), from, to);
-      std::printf("%s  age %-4s  retry %d  %s -> %s\n", id.c_str(),
-                  humanAge(static_cast<long>(now - idTime(id))).c_str(),
-                  d.second, from.c_str(), to.c_str());
+      std::string from = "?", to = "?", suffix;
+      if (m.isBatch)
+      {
+        // a batch carries its AETs (and routing) on every member; read the
+        // first, and note the object count
+        const std::string bdir = messagePath(d.first, m.id, true);
+        const auto objs = listIds(bdir);
+        if (!objs.empty())
+          readAETs(dcmPath(bdir, objs.front()), from, to);
+        suffix = "  [batch: " + std::to_string(objs.size()) + " objects]";
+      }
+      else
+        readAETs(dcmPath(d.first, m.id), from, to);
+      std::printf("%s  age %-4s  retry %d  %s -> %s%s\n", m.id.c_str(),
+                  humanAge(static_cast<long>(now - idTime(m.id))).c_str(),
+                  d.second, from.c_str(), to.c_str(), suffix.c_str());
     }
 }
 
