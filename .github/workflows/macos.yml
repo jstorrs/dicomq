@@ -1,0 +1,25 @@
+name: macOS build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # lets you trigger a run manually from the Actions tab / gh
+
+jobs:
+  build:
+    runs-on: macos-14   # Apple Silicon (arm64) runner — native build + real test execution
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake dcmtk
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix dcmtk)"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
