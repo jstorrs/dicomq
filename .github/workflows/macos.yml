@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install dependencies
-        run: brew install cmake dcmtk
+        run: brew install cmake dcmtk dylibbundler
 
       - name: Configure
         run: cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix dcmtk)"
@@ -26,6 +26,33 @@ jobs:
 
       - name: Stage binaries
         run: cmake --install build --prefix "$RUNNER_TEMP/dist"
+
+      - name: Bundle dependent dylibs (self-contained, no Homebrew needed)
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          # Collect every dicomq-* program; share one libs/ dir, sibling to bin/.
+          xs=()
+          for b in "$dist"/bin/dicomq-*; do xs+=(-x "$b"); done
+          # -b bundle non-system deps, -d dest, -p the path baked into headers.
+          # @loader_path/../libs resolves from both bin/ (exec) and libs/ (lib).
+          dylibbundler -od -b -cd -d "$dist/libs" -p '@loader_path/../libs/' "${xs[@]}"
+          # Rewriting Mach-O headers voids signatures; arm64 refuses to load an
+          # unsigned/broken binary, so re-sign ad-hoc. Libs first, then execs.
+          codesign --force --sign - "$dist"/libs/*.dylib
+          for b in "$dist"/bin/dicomq-*; do codesign --force --sign - "$b"; done
+
+      - name: Verify the tree is Homebrew-free
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          bad=0
+          for f in "$dist"/bin/dicomq-* "$dist"/libs/*.dylib; do
+            if otool -L "$f" | grep -q /opt/homebrew; then
+              echo "::error::leftover Homebrew dependency in $f"
+              otool -L "$f" | grep /opt/homebrew
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] && echo "OK: no /opt/homebrew references in bin/ or libs/"
 
       - name: Upload binaries
         uses: actions/upload-artifact@v6
