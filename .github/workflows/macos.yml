@@ -10,7 +10,7 @@ jobs:
     runs-on: macos-14   # Apple Silicon (arm64) runner — native build + real test execution
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: brew install cmake dcmtk
