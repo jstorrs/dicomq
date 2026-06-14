@@ -107,13 +107,13 @@ Both sides use the DICOM BCP 195 profile.
 ```sh
 dicomq-queue                       # what is queued where, ages, backoff
 dicomq-queue PACS1                 # per-message detail for a destination
-dicomq-super hold|release|requeue|fail <id>
+dicomq-ctl hold|release|requeue|fail <id>
 touch $SPOOL/route/PACS1/hold      # freeze a destination; rm to thaw
 ```
 
 `failed/` is the bounce pile — point your alerting at it. `corrupt/`
 holds quarantined malformed messages. dicomq never deletes from either;
-inspect, then `dicomq-super requeue` or `rm`.
+inspect, then `dicomq-ctl requeue` or `rm`.
 
 ## macOS
 

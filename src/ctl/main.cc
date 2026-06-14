@@ -1,11 +1,11 @@
-// dicomq-super — queue surgery (postsuper analog). Runs as the send
+// dicomq-ctl — queue surgery (postsuper analog). Runs as the send
 // user.
 //
-//   dicomq-super [-s <spool>] hold <id>            freeze a message in hold/
-//   dicomq-super [-s <spool>] release <id>         return it whence it came
-//   dicomq-super [-s <spool>] requeue <id>         back into queue/todo/ for
+//   dicomq-ctl [-s <spool>] hold <id>            freeze a message in hold/
+//   dicomq-ctl [-s <spool>] release <id>         return it whence it came
+//   dicomq-ctl [-s <spool>] requeue <id>         back into queue/todo/ for
 //                                                  fresh routing
-//   dicomq-super [-s <spool>] fail <id> [reason]   move into failed/
+//   dicomq-ctl [-s <spool>] fail <id> [reason]   move into failed/
 //
 // The message is found by searching queue/todo/, every route/<DEST>/todo/,
 // hold/, corrupt/, and failed/. Every move uses the standard discipline
@@ -34,8 +34,8 @@ using namespace dicomq;
 static int usage()
 {
   std::fprintf(stderr,
-      "usage: dicomq-super [-s <spool>] hold|release|requeue <id>\n"
-      "       dicomq-super [-s <spool>] fail <id> [reason]\n");
+      "usage: dicomq-ctl [-s <spool>] hold|release|requeue <id>\n"
+      "       dicomq-ctl [-s <spool>] fail <id> [reason]\n");
   return 100;
 }
 
@@ -78,7 +78,7 @@ int main(int argc, char **argv)
   const std::string from = findMessage(sp, id);
   if (from.empty())
   {
-    std::fprintf(stderr, "dicomq-super: no message '%s' in any queue\n",
+    std::fprintf(stderr, "dicomq-ctl: no message '%s' in any queue\n",
                  id.c_str());
     return 111;
   }
@@ -93,14 +93,14 @@ int main(int argc, char **argv)
       return 0;  // already held: idempotent
     if (!parsed)
     {
-      std::fprintf(stderr, "dicomq-super: cannot hold '%s': %s\n", id.c_str(),
+      std::fprintf(stderr, "dicomq-ctl: cannot hold '%s': %s\n", id.c_str(),
                    err.c_str());
       return 111;
     }
     env.add("held-from", from);
     if (!movePairAnnotated(sp, fromDir, sp.holdDir(), id, env, err))
     {
-      std::fprintf(stderr, "dicomq-super: %s\n", err.c_str());
+      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }
     std::printf("held %s (from %s)\n", id.c_str(), from.c_str());
@@ -111,7 +111,7 @@ int main(int argc, char **argv)
   {
     if (from != "hold")
     {
-      std::fprintf(stderr, "dicomq-super: '%s' is not in hold/\n", id.c_str());
+      std::fprintf(stderr, "dicomq-ctl: '%s' is not in hold/\n", id.c_str());
       return 111;
     }
     std::string target;
@@ -125,13 +125,13 @@ int main(int argc, char **argv)
     if (!parsed || !known)
     {
       std::fprintf(stderr,
-          "dicomq-super: '%s' has no usable held-from line; use requeue\n",
+          "dicomq-ctl: '%s' has no usable held-from line; use requeue\n",
           id.c_str());
       return 111;
     }
     if (!movePairAnnotated(sp, fromDir, sp.root + "/" + target, id, env, err))
     {
-      std::fprintf(stderr, "dicomq-super: %s\n", err.c_str());
+      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }
     std::printf("released %s (to %s)\n", id.c_str(), target.c_str());
@@ -144,7 +144,7 @@ int main(int argc, char **argv)
       return 0;  // idempotent
     if (!movePairRaw(sp, fromDir, sp.queueTodo(), id, err))
     {
-      std::fprintf(stderr, "dicomq-super: %s\n", err.c_str());
+      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }
     std::printf("requeued %s (from %s)\n", id.c_str(), from.c_str());
@@ -163,13 +163,13 @@ int main(int argc, char **argv)
       env.add("failed", isoTime(time(nullptr)) + " " + reason);
       if (!movePairAnnotated(sp, fromDir, sp.failedDir(), id, env, err))
       {
-        std::fprintf(stderr, "dicomq-super: %s\n", err.c_str());
+        std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
         return 111;
       }
     }
     else if (!movePairRaw(sp, fromDir, sp.failedDir(), id, err))
     {
-      std::fprintf(stderr, "dicomq-super: %s\n", err.c_str());
+      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }
     std::printf("failed %s (from %s)\n", id.c_str(), from.c_str());

@@ -180,7 +180,7 @@ done
 kill $SEND 2>/dev/null; wait $SEND 2>/dev/null
 check "daemon send delivers promptly (inotify, not the 60s scan)" test "$DELIVERED" = yes
 
-# --- queue + super --------------------------------------------------------
+# --- queue + ctl --------------------------------------------------------
 new_spool
 mkdir -p "$DICOMQ_SPOOL/dest/PACS1" "$DICOMQ_SPOOL/route/PACS1/todo"
 mkdir -p "$DICOMQ_SPOOL/aet/FWD"/{tmp,new}
@@ -193,18 +193,18 @@ OUT=$("$BIN/dicomq-queue")
 check "queue shows the route backlog"      grep -q 'route/PACS1.*1 message' <<<"$OUT"
 check "queue shows the hold flag"          grep -q 'held' <<<"$OUT"
 check "queue lists messages per dest"      grep -q "^$ID " <<<"$("$BIN/dicomq-queue" PACS1)"
-"$BIN/dicomq-super" hold "$ID" >/dev/null
-check "super hold moves the message"       test -f "$DICOMQ_SPOOL/hold/$ID.env"
+"$BIN/dicomq-ctl" hold "$ID" >/dev/null
+check "ctl hold moves the message"       test -f "$DICOMQ_SPOOL/hold/$ID.env"
 check "hold records the source queue"      grep -q '^held-from: route/PACS1/todo$' "$DICOMQ_SPOOL/hold/$ID.env"
-check "super hold is idempotent"           "$BIN/dicomq-super" hold "$ID"
-"$BIN/dicomq-super" release "$ID" >/dev/null
-check "super release returns it"           test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
-"$BIN/dicomq-super" fail "$ID" "operator says no" >/dev/null
-check "super fail moves to failed/"        test -f "$DICOMQ_SPOOL/failed/$ID.env"
-check "super fail records the reason"      grep -q '^failed: .*operator says no' "$DICOMQ_SPOOL/failed/$ID.env"
-"$BIN/dicomq-super" requeue "$ID" >/dev/null
-check "super requeue returns it to todo"   test -f "$DICOMQ_SPOOL/queue/todo/$ID.env"
-check_not "super refuses an unknown id"    "$BIN/dicomq-super" hold 19990101000000000.0.000000
+check "ctl hold is idempotent"           "$BIN/dicomq-ctl" hold "$ID"
+"$BIN/dicomq-ctl" release "$ID" >/dev/null
+check "ctl release returns it"           test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
+"$BIN/dicomq-ctl" fail "$ID" "operator says no" >/dev/null
+check "ctl fail moves to failed/"        test -f "$DICOMQ_SPOOL/failed/$ID.env"
+check "ctl fail records the reason"      grep -q '^failed: .*operator says no' "$DICOMQ_SPOOL/failed/$ID.env"
+"$BIN/dicomq-ctl" requeue "$ID" >/dev/null
+check "ctl requeue returns it to todo"   test -f "$DICOMQ_SPOOL/queue/todo/$ID.env"
+check_not "ctl refuses an unknown id"    "$BIN/dicomq-ctl" hold 19990101000000000.0.000000
 
 # --- recv (needs storescu/echoscu on PATH) --------------------------------
 if command -v storescu >/dev/null; then
@@ -297,7 +297,7 @@ if command -v storescp >/dev/null; then
   check "failure names the syntax problem"    grep -q "transcode is 'never'" "$DICOMQ_SPOOL/failed/$ID.env"
 
   printf 'ImplicitVRLittleEndian\ntranscode: lossless\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
-  "$BIN/dicomq-super" requeue "$ID" >/dev/null
+  "$BIN/dicomq-ctl" requeue "$ID" >/dev/null
   touch "$DICOMQ_SPOOL/route/PACS1/hold"
   "$BIN/dicomq-send" --once 2>/dev/null
   rm "$DICOMQ_SPOOL/route/PACS1/hold"
@@ -333,7 +333,7 @@ if command -v storescp >/dev/null; then
   check "refusal names the lossy syntax"      grep -q "is lossy and transcode is 'lossless'" "$DICOMQ_SPOOL/failed/$ID.env"
 
   printf 'JPEGBaseline\ntranscode: as-needed\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
-  "$BIN/dicomq-super" requeue "$ID" >/dev/null
+  "$BIN/dicomq-ctl" requeue "$ID" >/dev/null
   touch "$DICOMQ_SPOOL/route/PACS1/hold"
   "$BIN/dicomq-send" --once 2>/dev/null
   rm "$DICOMQ_SPOOL/route/PACS1/hold"

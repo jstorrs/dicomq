@@ -47,7 +47,7 @@ must not be on NFS.
 | `dicomq-clean` | `qmail-clean` | reap orphaned temporary files |
 | `dicomq-inject` | `qmail-inject` | enqueue a local DICOM file as if it had been received |
 | `dicomq-queue` | `postqueue`/`qshape` | show what is queued where: counts, ages, destination status (read-only) |
-| `dicomq-super` | `postsuper` | queue surgery: hold, release, requeue, fail |
+| `dicomq-ctl` | `postsuper` | queue surgery: hold, release, requeue, fail |
 
 The last two are Postfix's contribution: qmail's queue was famously
 opaque, and Postfix won operators with inspection and surgery tools.
@@ -94,7 +94,7 @@ dest/
     remote             # host, port, AET of the remote SCP
     propose            # optional: outbound transfer syntax profile
 failed/                # terminal failures: object + annotated envelope
-hold/                  # operator-frozen messages (via dicomq-super)
+hold/                  # operator-frozen messages (via dicomq-ctl)
 corrupt/               # quarantined malformed messages
 ```
 
@@ -274,7 +274,7 @@ into `failed/`, write an annotated envelope copy (with a final
 `failed/` is the bounce pile; alerting watches it.
 
 **Hold and quarantine** (Postfix's `hold/` and `corrupt/` queues).
-`dicomq-super hold <id>` moves a message from its queue into `hold/`
+`dicomq-ctl hold <id>` moves a message from its queue into `hold/`
 (same discipline: object first and envelope last on the way in,
 envelope first on the way out; a `held-from:` line records where it
 came from so `release` can return it). Touching `route/<DEST>/hold`
@@ -442,7 +442,7 @@ Three Postfix lessons bound the cost of this scheme:
   debugging story: every stage can be re-run from the shell.
 - `dicomq-clean` runs from a timer/cron.
 - `dicomq-queue` is read-only and safe for any user with read access to
-  the spool; `dicomq-super` performs queue surgery and runs as the
+  the spool; `dicomq-ctl` performs queue surgery and runs as the
   send user.
 - Two users suffice: one for recv (may write only `queue/`), one for
   send/local/remote/clean (everything else). The receiver compromise
