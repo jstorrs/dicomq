@@ -4,22 +4,29 @@
 // dicomq-remote — C-STORE forwarder for one destination (qmail-remote
 // analog).
 //
-//   dicomq-remote [-s <spool>] [-L <lifetime-days>] <DEST>
+//   dicomq-remote [-s <spool>] <DEST>
 //
 // Opens ONE association to dest/<DEST>/remote, proposing presentation
 // contexts per dest/<DEST>/propose (transfer syntaxes + transcode
-// policy), and C-STOREs every due message in route/<DEST>/todo/ over it.
+// policy), and C-STOREs every due message in route/<DEST>/todo/ and its
+// retry/<k>/ rungs over it. The SOP class/instance and transfer syntax
+// each message needs come from its DICOM file-meta header — there is no
+// sidecar.
 //
-// Per message: success unlinks the pair; rejection by the reachable
-// destination appends an "attempt:" line and recommits the envelope
-// copy (its mtime is the last-attempt time); a permanent impossibility
-// (no accepted context, transcode forbidden or unavailable) or an
-// exhausted queue lifetime (default 7 days) moves it to failed/ with a
-// reason. Transcoding happens per attempt, in memory; the queued object
-// is never modified. Policy: 'never' requires the stored syntax to be
-// accepted; 'lossless' transcodes but refuses lossy target syntaxes
-// (decompressing FROM lossy adds no further loss and is allowed);
-// 'as-needed' transcodes to anything the destination accepted.
+// Per message: success unlinks it; a rejection by the reachable
+// destination demotes it one retry rung (todo -> retry/1 -> retry/2 ...),
+// copying it to a private inode so the rung's mtime — the backoff clock —
+// is independent of the object's other queued copies (the same .dcm may
+// be hardlinked into other destinations' queues). The operator sizes the
+// ladder by which route/<DEST>/retry/<k> directories exist: a rejection
+// with no next rung — or any permanent impossibility (no accepted
+// context, transcode forbidden or unavailable) at the top of the ladder —
+// moves the object to failed/. The reason for every outcome is logged,
+// never stored. Transcoding happens per attempt, in memory; the
+// queued object is never modified. Policy: 'never' requires the stored
+// syntax to be accepted; 'lossless' transcodes but refuses lossy target
+// syntaxes (decompressing FROM lossy adds no further loss and is
+// allowed); 'as-needed' transcodes to anything the destination accepted.
 //
 // If dest/<DEST>/tls/ exists, the association uses DICOM TLS (BCP 195):
 // tls/ca.pem verifies the server (required when present, otherwise the
@@ -29,7 +36,7 @@
 // A connection-level failure is destination state, not message state:
 // it is recorded once in route/<DEST>/status (last-failure, failures,
 // next-attempt-after with exponential backoff capped at 1h) and the
-// program exits without touching any envelope; dicomq-send skips the
+// program exits without moving any message; dicomq-send skips the
 // destination until the status file says otherwise. A successful
 // association removes the status file.
 //
@@ -40,6 +47,7 @@
 
 #include "dcmtk/dcmdata/dcdeftag.h"
 #include "dcmtk/dcmdata/dcfilefo.h"
+#include "dcmtk/dcmdata/dcmetinf.h"
 #include "dcmtk/dcmdata/dcrledrg.h"
 #include "dcmtk/dcmdata/dcrleerg.h"
 #include "dcmtk/dcmdata/dcuid.h"
@@ -55,7 +63,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -63,7 +70,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "common/envelope.h"
+#include "common/kvfile.h"
 #include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
@@ -73,18 +80,26 @@ using namespace dicomq;
 static Spool sp;
 static std::string destName;
 
+// a due message to deliver: where it sits, its retry rung, and the
+// routing fields read once from its file-meta header
+struct WorkItem {
+  std::string dir;
+  int level;
+  std::string id, sopClass, sopInstance, xferUID;
+};
+
 static void logmsg(const std::string& m)
 {
   std::fprintf(stderr, "dicomq-remote: %s: %s\n", destName.c_str(), m.c_str());
 }
 
-// destination-level backoff (dead-site cache): one file, not N envelopes
+// destination-level backoff (dead-site cache): one file, not N messages
 static void recordConnectionFailure(const std::string& reason)
 {
   std::string err;
   long failures = 0;
-  Envelope old;
-  if (Envelope::read(sp.routeStatus(destName), old, err))
+  KeyValueFile old;
+  if (KeyValueFile::read(sp.routeStatus(destName), old, err))
     failures = atol(old.get("failures").c_str());
   failures++;
   long delay = 60;
@@ -93,67 +108,72 @@ static void recordConnectionFailure(const std::string& reason)
   if (delay > 3600)
     delay = 3600;
 
-  Envelope status;
+  KeyValueFile status;
   status.add("last-failure", isoTime(time(nullptr)) + " " + reason);
   status.add("failures", std::to_string(failures));
   status.add("next-attempt-after", isoTime(time(nullptr) + delay));
-  if (!writeEnvelopeCommitted(sp, status, sp.routeStatus(destName), err))
+  if (!writeKeyValueCommitted(sp, status, sp.routeStatus(destName), err))
     logmsg("cannot write status: " + err);
   logmsg("connection failed (" + reason + "); next attempt in "
          + std::to_string(delay) + "s");
 }
 
-static void failMessage(const std::string& todo, const std::string& id,
-                        Envelope env, const std::string& reason)
+// a destination rejected this message: climb one retry rung, or fail it
+// at the top. The operator sizes the ladder by which route/<DEST>/retry/<k>
+// directories exist — dicomq never creates a rung, so a rejection with no
+// next rung is terminal. The move to a rung COPIES the object to a fresh
+// inode (and unlinks the source) so this rung's mtime — what the backoff
+// clock reads — is private, even though the same .dcm may be hardlinked
+// into other destinations' queues. The terminal move to failed/ can be a
+// plain rename: failed/ is never scheduled.
+static void demote(const WorkItem& w, const std::string& reason)
 {
   std::string err;
-  logmsg("failing " + id + ": " + reason);
-  env.add("failed", isoTime(time(nullptr)) + " " + destName + ": " + reason);
-  if (!movePairAnnotated(sp, todo, sp.failedDir(), id, env, err))
-    logmsg("cannot fail " + id + ": " + err);
-}
-
-static void recordAttempt(const std::string& todo, const std::string& id,
-                          Envelope env, const std::string& what)
-{
-  std::string err;
-  env.add("attempt", isoTime(time(nullptr)) + " " + destName + ": " + what);
-  if (!writeEnvelopeCommitted(sp, env, envPath(todo, id), err))
-    logmsg("cannot record attempt on " + id + ": " + err);
+  const int next = w.level + 1;
+  const std::string nextDir = sp.routeRetry(destName, next);
+  if (!isDir(nextDir))
+  {
+    logmsg("failing " + w.id + ": " + reason + " (no retry/"
+           + std::to_string(next) + " rung)");
+    if (!moveMessage(w.dir, sp.failedDir(), w.id, err))
+      logmsg("cannot fail " + w.id + ": " + err);
+    return;
+  }
+  logmsg(w.id + " -> retry/" + std::to_string(next) + ": " + reason);
+  const std::string tmp = sp.queueTmp() + "/" + w.id + ".retry"
+                          + std::to_string(getpid());
+  if (!copyFile(dcmPath(w.dir, w.id), tmp, err)
+      || !commitFile(tmp, dcmPath(nextDir, w.id), err))
+  {
+    logmsg("cannot demote " + w.id + ": " + err);
+    unlink(tmp.c_str());
+    return;
+  }
+  if (!removeMessage(w.dir, w.id, err))
+    logmsg("demoted " + w.id + " but cannot remove source: " + err);
 }
 
 int main(int argc, char **argv)
 {
   std::string spoolArg;
-  long lifetimeDays = 7;
   int opt;
-  while ((opt = getopt(argc, argv, "s:L:")) != -1)
+  while ((opt = getopt(argc, argv, "s:")) != -1)
   {
     switch (opt)
     {
       case 's': spoolArg = optarg; break;
-      case 'L': lifetimeDays = atol(optarg); break;
       default:
-        std::fprintf(stderr,
-            "usage: dicomq-remote [-s <spool>] [-L <lifetime-days>] <DEST>\n");
+        std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
         return 100;
     }
   }
-  if (lifetimeDays <= 0)
-  {
-    // a non-positive lifetime would fail every queued message at once
-    std::fprintf(stderr, "dicomq-remote: -L must be a positive number of days\n");
-    return 100;
-  }
   if (optind + 1 != argc)
   {
-    std::fprintf(stderr,
-        "usage: dicomq-remote [-s <spool>] [-L <lifetime-days>] <DEST>\n");
+    std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
     return 100;
   }
   destName = argv[optind];
   sp = Spool(spoolArg);
-  const std::string todo = sp.routeTodo(destName);
 
   std::string err;
   RemoteConfig cfg;
@@ -171,36 +191,49 @@ int main(int argc, char **argv)
   const std::string callingAET =
       cfg.callingAET.empty() ? "DICOMQ" : cfg.callingAET;
 
-  // gather due work (and expire the dead) before connecting
+  // gather due work across todo/ (always due) and every retry/<k> rung,
+  // reading each message's routing fields from its file-meta header
   const time_t now = time(nullptr);
-  std::vector<std::string> work;
-  std::map<std::string, Envelope> envs;
+  std::vector<WorkItem> work;
   std::set<std::string> sopClasses;
-  for (const auto& id : listIds(todo))
+
+  auto gather = [&](const std::string& dir, int level) {
+    for (const auto& id : listIds(dir))
+    {
+      if (!messageDue(dir, id, level, now))
+        continue;  // attempted and still backing off
+      DcmFileFormat ff;
+      if (ff.loadFile(dcmPath(dir, id).c_str(), EXS_Unknown, EGL_noChange,
+                      DCM_MaxReadLength, ERM_metaOnly).bad())
+      {
+        logmsg("quarantining " + id + ": cannot read file meta");
+        if (!moveMessage(dir, sp.corruptDir(), id, err))
+          logmsg("cannot quarantine " + id + ": " + err);
+        continue;
+      }
+      DcmMetaInfo *m = ff.getMetaInfo();
+      OFString sc, si, ts;
+      if (!m
+          || m->findAndGetOFString(DCM_MediaStorageSOPClassUID, sc).bad()
+          || m->findAndGetOFString(DCM_MediaStorageSOPInstanceUID, si).bad()
+          || m->findAndGetOFString(DCM_TransferSyntaxUID, ts).bad()
+          || sc.empty() || si.empty() || ts.empty())
+      {
+        logmsg("quarantining " + id + ": no usable file meta header");
+        if (!moveMessage(dir, sp.corruptDir(), id, err))
+          logmsg("cannot quarantine " + id + ": " + err);
+        continue;
+      }
+      work.push_back({dir, level, id, sc.c_str(), si.c_str(), ts.c_str()});
+      sopClasses.insert(sc.c_str());
+    }
+  };
+  gather(sp.routeTodo(destName), 0);
+  for (const auto& lvl : listSubdirs(sp.routeRetryRoot(destName)))
   {
-    Envelope env;
-    if (!Envelope::read(envPath(todo, id), env, err))
-    {
-      logmsg("quarantining " + id + ": " + err);
-      if (!movePairRaw(sp, todo, sp.corruptDir(), id, err))
-        logmsg("cannot quarantine " + id + ": " + err);
-      continue;
-    }
-    if (now - idTime(id) > lifetimeDays * 86400)
-    {
-      failMessage(todo, id, env, "queue lifetime exhausted");
-      continue;
-    }
-    if (!messageDue(todo, id, env, now))
-      continue;  // attempted and still backing off
-    if (env.get("sop-class-uid").empty())
-    {
-      failMessage(todo, id, env, "envelope lacks sop-class-uid");
-      continue;
-    }
-    sopClasses.insert(env.get("sop-class-uid"));
-    envs[id] = env;
-    work.push_back(id);
+    const int k = atoi(lvl.c_str());
+    if (k >= 1)
+      gather(sp.routeRetry(destName, k), k);
   }
   if (work.empty())
     return 0;
@@ -271,12 +304,11 @@ int main(int argc, char **argv)
   {
     for (const auto& w : work)
     {
-      const std::string ts = envs[w].get("transfer-syntax-uid");
       bool seen = false;
       for (const auto& p : proposeTS)
-        seen = seen || p == ts;
-      if (!seen && !ts.empty())
-        proposeTS.push_back(ts);
+        seen = seen || p == w.xferUID;
+      if (!seen && !w.xferUID.empty())
+        proposeTS.push_back(w.xferUID);
     }
     proposeTS.push_back(UID_LittleEndianExplicitTransferSyntax);
     proposeTS.push_back(UID_LittleEndianImplicitTransferSyntax);
@@ -319,19 +351,18 @@ int main(int argc, char **argv)
   }
 
   bool connectionBroke = false;
-  for (const auto& id : work)
+  for (const auto& item : work)
   {
-    Envelope& env = envs[id];
-    const std::string sopClass = env.get("sop-class-uid");
-    const std::string sopInstance = env.get("sop-instance-uid");
+    const std::string& sopClass = item.sopClass;
+    const std::string& sopInstance = item.sopInstance;
 
     DcmFileFormat ff;
-    cond = ff.loadFile(dcmPath(todo, id).c_str());
+    cond = ff.loadFile(dcmPath(item.dir, item.id).c_str());
     if (cond.bad())
     {
-      logmsg("quarantining " + id + ": " + cond.text());
-      if (!movePairRaw(sp, todo, sp.corruptDir(), id, err))
-        logmsg("cannot quarantine " + id + ": " + err);
+      logmsg("quarantining " + item.id + ": " + cond.text());
+      if (!moveMessage(item.dir, sp.corruptDir(), item.id, err))
+        logmsg("cannot quarantine " + item.id + ": " + err);
       continue;
     }
     DcmDataset *dataset = ff.getDataset();
@@ -349,15 +380,15 @@ int main(int argc, char **argv)
     if (presID == 0)
     {
       // No usable context. Distinguish our own context-budget limit (we
-      // never proposed this class — defer so a later batch can carry it)
-      // from a destination that refused a class we did propose (a real,
-      // permanent rejection of that SOP class).
+      // never proposed this class — leave it untouched so a later batch
+      // carries it; a deferral must not consume a retry rung) from a
+      // destination that refused a class we did propose (a real,
+      // permanent rejection that climbs the ladder).
       if (proposedSops.count(sopClass) == 0)
-        recordAttempt(todo, id, env, "deferred: presentation-context budget "
-                      "exhausted, " + sopClass + " not proposed this batch");
+        logmsg("deferred " + item.id + ": presentation-context budget "
+               "exhausted, " + sopClass + " not proposed this batch");
       else
-        failMessage(todo, id, env, "no presentation context accepted for "
-                    + sopClass);
+        demote(item, "no presentation context accepted for " + sopClass);
       continue;
     }
     T_ASC_PresentationContext pc;
@@ -367,17 +398,16 @@ int main(int argc, char **argv)
       // stored syntax not accepted: transcode or fail, per policy
       if (profile.transcode == ProposeProfile::Transcode::Never)
       {
-        failMessage(todo, id, env, std::string("stored syntax ")
-                    + objXfer.getXferID()
-                    + " not accepted and transcode is 'never'");
+        demote(item, std::string("stored syntax ") + objXfer.getXferID()
+               + " not accepted and transcode is 'never'");
         continue;
       }
       if (profile.transcode == ProposeProfile::Transcode::Lossless
           && isLossyTransferSyntaxUID(pc.acceptedTransferSyntax))
       {
-        failMessage(todo, id, env, std::string("accepted syntax ")
-                    + pc.acceptedTransferSyntax
-                    + " is lossy and transcode is 'lossless'");
+        demote(item, std::string("accepted syntax ")
+               + pc.acceptedTransferSyntax
+               + " is lossy and transcode is 'lossless'");
         continue;
       }
       const DcmXfer target(pc.acceptedTransferSyntax);
@@ -385,9 +415,9 @@ int main(int argc, char **argv)
                                                            nullptr);
       if (xc.bad() || !dataset->canWriteXfer(target.getXfer()))
       {
-        failMessage(todo, id, env, std::string("cannot transcode ")
-                    + objXfer.getXferID() + " -> " + target.getXferID()
-                    + (xc.bad() ? std::string(": ") + xc.text() : ""));
+        demote(item, std::string("cannot transcode ")
+               + objXfer.getXferID() + " -> " + target.getXferID()
+               + (xc.bad() ? std::string(": ") + xc.text() : ""));
         continue;
       }
     }
@@ -411,8 +441,8 @@ int main(int argc, char **argv)
 
     if (cond.bad())
     {
-      // mid-association breakage is destination state; envelopes stay
-      // untouched so nothing is double-penalized
+      // mid-association breakage is destination state; messages stay
+      // where they are so nothing is double-penalized
       recordConnectionFailure(cond.text());
       connectionBroke = true;
       break;
@@ -420,17 +450,17 @@ int main(int argc, char **argv)
     if (rsp.DimseStatus == STATUS_Success
         || (rsp.DimseStatus & 0xf000) == 0xB000)  // warnings are delivered
     {
-      if (!removePair(todo, id, err))
-        logmsg("delivered " + id + " but cannot dequeue: " + err);
+      if (!removeMessage(item.dir, item.id, err))
+        logmsg("delivered " + item.id + " but cannot dequeue: " + err);
       else
-        logmsg("delivered " + id);
+        logmsg("delivered " + item.id);
     }
     else
     {
       char status[16];
       snprintf(status, sizeof(status), "0x%04x", rsp.DimseStatus);
-      logmsg(id + " rejected with status " + status);
-      recordAttempt(todo, id, env, std::string("rejected ") + status);
+      logmsg(item.id + " rejected with status " + status);
+      demote(item, std::string("rejected ") + status);
     }
   }
 

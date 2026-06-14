@@ -53,12 +53,11 @@ bool isLossyTransferSyntaxUID(const std::string& uid);
 
 // aet/<AET>/deliver — routing instructions, one per line (DESIGN.md
 // "Routing instructions"). A missing file yields the default
-// instruction: maildir ./ without envelope.
+// instruction: maildir ./
 struct DeliverInstruction {
   enum class Kind { Maildir, Forward };
   Kind kind;
-  std::string arg;       // maildir path (possibly relative) or DEST name
-  bool withEnv = false;  // maildir only: deliver the envelope too
+  std::string arg;  // maildir path (possibly relative) or DEST name
 };
 
 bool loadDeliver(const std::string& path,

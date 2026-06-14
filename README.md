@@ -51,7 +51,7 @@ EOF
 
 # routing instructions (default when absent: "maildir ./")
 cat > $SPOOL/aet/ARCHIVE/deliver <<EOF
-maildir ./ env
+maildir ./
 forward PACS1
 EOF
 ```
@@ -59,7 +59,8 @@ EOF
 ## Define a forwarding destination
 
 ```sh
-mkdir -p $SPOOL/dest/PACS1 $SPOOL/route/PACS1/todo
+# todo holds fresh objects; retry/1..N are the retry rungs (see Operate)
+mkdir -p $SPOOL/dest/PACS1 $SPOOL/route/PACS1/{todo,retry/{1..8}}
 cat > $SPOOL/dest/PACS1/remote <<EOF
 host: pacs1.example.org
 port: 11112
@@ -111,8 +112,18 @@ dicomq-ctl hold|release|requeue|fail <id>
 touch $SPOOL/route/PACS1/hold      # freeze a destination; rm to thaw
 ```
 
+A rejected forward climbs a per-destination retry ladder
+(`route/<DEST>/todo` → `retry/1` → `retry/2` → …); `ls
+$SPOOL/route/PACS1/retry/3` is every object that has failed PACS1 three
+times. You size the ladder by creating the rungs — `mkdir -p
+$SPOOL/route/PACS1/retry/{1..8}` allows eight tries — and dicomq never
+creates one itself, so a rejection at the top existing rung (or with no
+`retry/` dir at all) lands the object in `failed/` rather than digging
+deeper. Reasons are in the log, not the spool — the rung says how many
+times, the log says why.
+
 `failed/` is the bounce pile — point your alerting at it. `corrupt/`
-holds quarantined malformed messages. dicomq never deletes from either;
+holds quarantined malformed objects. dicomq never deletes from either;
 inspect, then `dicomq-ctl requeue` or `rm`.
 
 ## macOS

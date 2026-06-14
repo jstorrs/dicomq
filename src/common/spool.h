@@ -13,6 +13,8 @@
 
 namespace dicomq {
 
+struct KeyValueFile;
+
 // Spool root from $DICOMQ_SPOOL, else the compiled-in default
 // /var/spool/dicomq.
 std::string spoolRoot();
@@ -26,9 +28,13 @@ struct Spool {
 
   std::string queueTmp() const { return root + "/queue/tmp"; }
   std::string queueTodo() const { return root + "/queue/todo"; }
+  std::string queueTodoAET(const std::string& a) const { return root + "/queue/todo/" + a; }
   std::string routeRoot() const { return root + "/route"; }
   std::string routeDir(const std::string& d) const { return root + "/route/" + d; }
   std::string routeTodo(const std::string& d) const { return routeDir(d) + "/todo"; }
+  std::string routeRetryRoot(const std::string& d) const { return routeDir(d) + "/retry"; }
+  std::string routeRetry(const std::string& d, int k) const
+      { return routeDir(d) + "/retry/" + std::to_string(k); }
   std::string routeStatus(const std::string& d) const { return routeDir(d) + "/status"; }
   std::string routeHoldFlag(const std::string& d) const { return routeDir(d) + "/hold"; }
   std::string aetRoot() const { return root + "/aet"; }
@@ -39,7 +45,7 @@ struct Spool {
   std::string corruptDir() const { return root + "/corrupt"; }
 };
 
-// Ids of committed messages in dir (entries ending ".env", suffix
+// Ids of committed messages in dir (entries ending ".dcm", suffix
 // stripped), sorted — which is receive order. Missing dir = empty.
 std::vector<std::string> listIds(const std::string& dir);
 
@@ -71,13 +77,14 @@ long long freeBytes(const std::string& path);
 bool pathExists(const std::string& path);
 bool isDir(const std::string& path);
 
-// qmail's quadratic retry schedule: a message that has been attempted
-// is due again when (now - last attempt) >= backoffSeconds(age). Grows
-// as 2*sqrt(age*BASE), so successive attempts happen at ages ~BASE*n^2;
-// capped at 6 hours. A message with NO recorded attempts is always due
-// — callers must check the envelope's attempt count first.
-long backoffSeconds(long ageSeconds);
-bool isDue(time_t now, time_t lastAttempt, time_t received);
+// qmail's quadratic retry schedule: backoffSeconds grows as
+// 2*sqrt(seconds*BASE), capped at 6 hours. retryBackoff(level) is the
+// wait a message must sit at retry rung `level` before it is due again
+// — the ladder keys the same quadratic cadence on the rung number, so
+// successive rungs come due ~BASE*level^2 seconds apart. A message in
+// todo/ (level 0) is always due.
+long backoffSeconds(long seconds);
+long retryBackoff(int level);
 
 // Message id: "<YYYYMMDDHHMMSSMMM>.<pid>.<counter>" (UTC). Unique per
 // host by construction; lexically ordered by creation time within a
@@ -92,6 +99,15 @@ std::string sanitizeAET(const std::string& aet);
 // Sanitized names that may never name an aet/ directory or delivery
 // destination ("tmp", "new", "todo"), compared case-insensitively.
 bool isReservedName(const std::string& name);
+
+// Directory portion of path ("." if none, "/" for a root entry).
+std::string dirOf(const std::string& path);
+
+// mkdir(path) treating EEXIST as success, then fsync the parent so the
+// new directory survives a crash. Intermediate parents must already
+// exist (the spool skeleton is operator-created; this only fills in the
+// per-AET and per-retry-rung leaves dicomq owns).
+bool mkdirIfMissing(const std::string& path, std::string& err);
 
 // fsync the file or directory at path. On failure returns false and
 // sets err.
@@ -108,6 +124,13 @@ bool commitFile(const std::string& tmpPath, const std::string& finalPath,
 // this work. Fsyncs the containing directory on success.
 bool linkIdempotent(const std::string& from, const std::string& to,
                     std::string& err);
+
+// Serialize kv into queue/tmp/ and commit it atomically at finalPath
+// (replacing any existing file). Used for the dest/<DEST>/status
+// dead-site cache. The tmp name carries the pid so concurrent writers
+// cannot collide.
+bool writeKeyValueCommitted(const Spool& sp, const KeyValueFile& kv,
+                            const std::string& finalPath, std::string& err);
 
 } // namespace dicomq
 

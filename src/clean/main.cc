@@ -1,17 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Judd Storrs <jstorrs@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// dicomq-clean — orphan reaper (qmail-clean analog). Run from a
-// timer/cron.
+// dicomq-clean — tmp reaper (qmail-clean analog). Run from a timer/cron.
 //
 //   dicomq-clean [-s <spool>] [-g <grace-hours>]
 //
 // Removes queue/tmp/ entries older than the grace period (default 36
-// hours), and orphaned .dcm files (no .env beside them) of the same age
-// from queue/todo/ and route/*/todo/ — a .dcm without its envelope is
-// invisible to every consumer and means a crash mid-commit. Touches
-// nothing younger, nothing with an envelope, and nothing outside
-// queue/ and route/. Reports every removal on stdout.
+// hours): interrupted receive/inject/transcode writes that never
+// committed. A committed message is a single <id>.dcm placed by one
+// atomic rename, so the queues never hold half-written objects and there
+// are no sidecar orphans to reap. Touches nothing younger and nothing
+// outside queue/tmp/. Reports every removal on stdout.
 //
 // Speaks no DICOM; links only dicomq-common.
 
@@ -61,24 +60,6 @@ static void cleanTmp(const std::string& dir)
   }
 }
 
-static void cleanOrphans(const std::string& dir)
-{
-  std::error_code ec;
-  for (const auto& entry : fs::directory_iterator(dir, ec))
-  {
-    const std::string name = entry.path().filename().string();
-    if (name.size() <= 4 || name.compare(name.size() - 4, 4, ".dcm") != 0)
-      continue;
-    const std::string env =
-        dir + "/" + name.substr(0, name.size() - 4) + ".env";
-    if (pathExists(env))
-      continue;  // committed message, not ours to touch
-    const std::string p = entry.path().string();
-    if (olderThanCutoff(p))
-      reap(p);
-  }
-}
-
 int main(int argc, char **argv)
 {
   std::string spoolArg;
@@ -107,9 +88,6 @@ int main(int argc, char **argv)
   cutoff = time(nullptr) - graceHours * 3600;
 
   cleanTmp(sp.queueTmp());
-  cleanOrphans(sp.queueTodo());
-  for (const auto& dest : listSubdirs(sp.routeRoot()))
-    cleanOrphans(sp.routeTodo(dest));
 
   return problems ? 111 : 0;
 }

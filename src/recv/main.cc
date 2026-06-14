@@ -23,10 +23,11 @@
 // negotiate presentation contexts per aet/<called-aet>/accept. Per
 // object: write queue/tmp/<id>.dcm with a zeroed preamble and file meta
 // stamped with Source/Sending/ReceivingApplicationEntityTitle
-// (0002,0016/17/18), fsync, commit into queue/todo/ (.env last), THEN
-// answer the C-STORE; any failure removes the tmp files and answers
-// with a refused status. The envelope, not the preamble, carries queue
-// state (DESIGN.md "Why a sidecar, not the DICOM preamble").
+// (0002,0016/17/18), fsync, then commit into queue/todo/<called-aet>/
+// with a single atomic rename THEN answer the C-STORE; any failure
+// removes the tmp file and answers with a refused status. A message is
+// the lone .dcm — its file-meta header carries every field routing
+// needs (DESIGN.md "Where message metadata lives").
 //
 // Exit: 0 association handled; 111 startup/network failure.
 
@@ -51,7 +52,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "common/envelope.h"
 #include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
@@ -127,29 +127,22 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
     return;
   }
 
-  Envelope env;
-  env.add("id", id);
-  env.add("received", isoTimeMillis());
-  env.add("peer", ctx->peer);
-  env.add("calling-aet", ctx->callingAET);
-  env.add("called-aet", ctx->calledAET);
-  env.add("sop-class-uid", sopClass);
-  env.add("sop-instance-uid", sopInstance);
-  env.add("transfer-syntax-uid", DcmXfer(xfer).getXferID());
-
-  // object first, envelope last; only after both are durable may the
-  // C-STORE response report success
-  if (!commitFile(tmpDcm, dcmPath(sp.queueTodo(), id), err)
-      || !writeEnvelopeCommitted(sp, env, envPath(sp.queueTodo(), id), err))
+  // one atomic rename into the called AET's inbound queue is the commit;
+  // only after it is durable may the C-STORE response report success.
+  // The .dcm is the whole message: its file-meta header already carries
+  // the SOP UIDs, transfer syntax, and AETs that routing reads later.
+  const std::string aetDir = sp.queueTodoAET(sanitizeAET(ctx->calledAET));
+  if (!mkdirIfMissing(aetDir, err)
+      || !commitFile(tmpDcm, dcmPath(aetDir, id), err))
   {
     logmsg("cannot enqueue " + id + ": " + err);
     unlink(tmpDcm.c_str());
-    removePair(sp.queueTodo(), id, err);
+    removeMessage(aetDir, id, err);
     rsp->DimseStatus = STATUS_STORE_Refused_OutOfResources;
     return;
   }
-  logmsg("queued " + id + " from " + ctx->callingAET + " for "
-         + ctx->calledAET);
+  logmsg("queued " + id + " from " + ctx->callingAET + " (" + ctx->peer
+         + ") for " + ctx->calledAET);
 }
 
 // ---------------------------------------------------------------------------

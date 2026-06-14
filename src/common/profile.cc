@@ -3,7 +3,7 @@
 
 #include "common/profile.h"
 
-#include "common/envelope.h"
+#include "common/kvfile.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -201,12 +201,10 @@ bool loadDeliver(const std::string& path,
       in.kind = DeliverInstruction::Kind::Forward;
       in.arg = words[1];
     }
-    else if ((words.size() == 2 || (words.size() == 3 && words[2] == "env"))
-             && words[0] == "maildir")
+    else if (words.size() == 2 && words[0] == "maildir")
     {
       in.kind = DeliverInstruction::Kind::Maildir;
       in.arg = words[1];
-      in.withEnv = (words.size() == 3);
     }
     else
     {
@@ -227,13 +225,13 @@ bool RemoteConfig::load(const std::string& path, RemoteConfig& c,
                         std::string& err)
 {
   c = RemoteConfig();
-  Envelope env;
-  if (!Envelope::read(path, env, err))
+  KeyValueFile kv;
+  if (!KeyValueFile::read(path, kv, err))
     return false;
-  c.host = env.get("host");
-  c.aet = env.get("aet");
-  c.callingAET = env.get("calling-aet");
-  const std::string port = env.get("port");
+  c.host = kv.get("host");
+  c.aet = kv.get("aet");
+  c.callingAET = kv.get("calling-aet");
+  const std::string port = kv.get("port");
   if (!port.empty())
     c.port = atoi(port.c_str());
   if (c.host.empty() || c.aet.empty() || c.port <= 0 || c.port > 65535)

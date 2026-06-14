@@ -15,7 +15,7 @@ enable_testing()
 
 add_library(dicomq-common STATIC
   src/common/spool.cc
-  src/common/envelope.cc
+  src/common/kvfile.cc
   src/common/message.cc
   src/common/profile.cc
 )
@@ -27,12 +27,16 @@ foreach(prog recv send local remote clean inject queue ctl)
   target_link_libraries(dicomq-${prog} PRIVATE dicomq-common)
 endforeach()
 
-# Only the edge programs speak DICOM; the queue core must stay free of
-# DCMTK so it can be tested without it.
+# dicomq-send and dicomq-clean speak no DICOM (routing is by directory).
+# The other programs read the DICOM file-meta header: recv/remote over
+# the network, inject on submission, and ctl/queue to recover a routed
+# message's AET (no sidecar carries it anymore).
 target_link_libraries(dicomq-recv PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
 target_link_libraries(dicomq-remote PRIVATE DCMTK::dcmnet DCMTK::dcmtls
                                             DCMTK::dcmjpeg DCMTK::dcmjpls)
 target_link_libraries(dicomq-inject PRIVATE DCMTK::dcmdata)
+target_link_libraries(dicomq-ctl PRIVATE DCMTK::dcmdata)
+target_link_libraries(dicomq-queue PRIVATE DCMTK::dcmdata)
 
 foreach(prog recv send local remote clean inject queue ctl)
   install(TARGETS dicomq-${prog} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

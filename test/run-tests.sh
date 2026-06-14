@@ -27,6 +27,11 @@ new_spool() {
   mkdir -p "$DICOMQ_SPOOL"/{queue/{tmp,todo},route,aet,dest,failed,hold,corrupt}
 }
 
+# the meta header carries every routing field now; assert one of them
+meta_has() { # meta_has <file> <pattern>
+  dcmdump "$1" 2>/dev/null | grep -q "$2"
+}
+
 listening() { # listening <port> — passive check, no connection made
   if command -v ss >/dev/null 2>&1; then
     ss -tln 2>/dev/null | grep -q ":$1 "
@@ -74,13 +79,15 @@ dump2dcm +te "$WORK/test.dump" "$WORK/test.dcm" 2>/dev/null \
 # --- inject ---------------------------------------------------------------
 new_spool
 ID=$("$BIN/dicomq-inject" -c ARCHIVE -a MOD1 "$WORK/test.dcm")
+DCM="$DICOMQ_SPOOL/queue/todo/ARCHIVE/$ID.dcm"
 check "inject returns an id"               test -n "$ID"
-check "inject commits the object"          test -f "$DICOMQ_SPOOL/queue/todo/$ID.dcm"
-check "inject commits the envelope"        test -f "$DICOMQ_SPOOL/queue/todo/$ID.env"
-check "envelope has the called AET"        grep -q '^called-aet: ARCHIVE$' "$DICOMQ_SPOOL/queue/todo/$ID.env"
-check "envelope has the SOP instance UID"  grep -q '^sop-instance-uid: 1.2.276.0.7230010.3.1.4.42.1$' "$DICOMQ_SPOOL/queue/todo/$ID.env"
-check "envelope has the transfer syntax"   grep -q '^transfer-syntax-uid: 1.2.840.10008.1.2.1$' "$DICOMQ_SPOOL/queue/todo/$ID.env"
-check "injected object is byte-identical"  cmp -s "$WORK/test.dcm" "$DICOMQ_SPOOL/queue/todo/$ID.dcm"
+check "inject commits the object by AET"   test -f "$DCM"
+check "inject keys the queue by called AET" test ! -e "$DICOMQ_SPOOL/queue/todo/$ID.dcm"
+check "object writes no sidecar"           test ! -e "$DICOMQ_SPOOL/queue/todo/ARCHIVE/$ID.env"
+check "meta stamps the called AET"         meta_has "$DCM" '0002,0018.*ARCHIVE'
+check "meta stamps the calling AET"        meta_has "$DCM" '0002,0016.*MOD1'
+check "meta has the SOP instance UID"      meta_has "$DCM" '0002,0003.*1.2.276.0.7230010.3.1.4.42.1'
+check "meta has the transfer syntax"       meta_has "$DCM" '0002,0010.*LittleEndianExplicit'
 check "queue/tmp left empty"               test -z "$(ls -A "$DICOMQ_SPOOL/queue/tmp")"
 check_not "inject refuses a non-DICOM file" "$BIN/dicomq-inject" -c X "$WORK/test.dump"
 
@@ -92,35 +99,32 @@ else
 fi
 
 # --- clean ----------------------------------------------------------------
+# A committed message is one atomic-renamed .dcm, so the queues never hold
+# half-written objects: clean only reaps interrupted queue/tmp/ writes.
 new_spool
-touch "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/orphan.dcm"
-touch "$DICOMQ_SPOOL/queue/todo/kept.dcm"; touch "$DICOMQ_SPOOL/queue/todo/kept.env"
-age_out "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/orphan.dcm"
+mkdir -p "$DICOMQ_SPOOL/queue/todo/ARCHIVE"
+touch "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/ARCHIVE/kept.dcm"
+age_out "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/ARCHIVE/kept.dcm"
 "$BIN/dicomq-clean" >/dev/null
 check "clean reaps stale tmp files"        test ! -e "$DICOMQ_SPOOL/queue/tmp/stale.dcm"
-check "clean reaps old orphan objects"     test ! -e "$DICOMQ_SPOOL/queue/todo/orphan.dcm"
-check "clean keeps committed messages"     test -e "$DICOMQ_SPOOL/queue/todo/kept.dcm"
-age_out "$DICOMQ_SPOOL/queue/todo/kept.dcm"
-"$BIN/dicomq-clean" >/dev/null
-check "clean keeps old committed messages" test -e "$DICOMQ_SPOOL/queue/todo/kept.dcm"
+check "clean never touches committed objects" test -e "$DICOMQ_SPOOL/queue/todo/ARCHIVE/kept.dcm"
 
 # --- local ----------------------------------------------------------------
 new_spool
 mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
 ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
 MD="$DICOMQ_SPOOL/aet/ARCHIVE"
-check "local delivers the object"          "$BIN/dicomq-local" "$ID" "$MD"
+SRC="$DICOMQ_SPOOL/queue/todo/ARCHIVE"
+check "local delivers the object"          "$BIN/dicomq-local" "$ID" "$MD" "$SRC"
 check "delivered object exists"            test -f "$MD/new/$ID.dcm"
 check "delivery is a hardlink"             test "$(nlinks "$MD/new/$ID.dcm")" = 2
-check "local is idempotent"                "$BIN/dicomq-local" "$ID" "$MD"
-check "local delivers the envelope on request" "$BIN/dicomq-local" "$ID" "$MD" env
-check "delivered envelope exists"          test -f "$MD/new/$ID.env"
-check_not "local refuses a missing maildir" "$BIN/dicomq-local" "$ID" "$DICOMQ_SPOOL/aet/NOWHERE"
+check "local is idempotent"                "$BIN/dicomq-local" "$ID" "$MD" "$SRC"
+check_not "local refuses a missing maildir" "$BIN/dicomq-local" "$ID" "$DICOMQ_SPOOL/aet/NOWHERE" "$SRC"
 # cross-filesystem fallback: /dev/shm is a different fs from /tmp
 if [ -d /dev/shm ] && [ "$(stat -fc %i /dev/shm 2>/dev/null)" != "$(stat -fc %i "$WORK" 2>/dev/null)" ]; then
   XMD=$(mktemp -d /dev/shm/dicomq-md.XXXXXX); mkdir -p "$XMD"/{tmp,new}
-  check "local copies across filesystems"  "$BIN/dicomq-local" "$ID" "$XMD"
-  check "cross-fs object delivered intact" cmp -s "$WORK/test.dcm" "$XMD/new/$ID.dcm"
+  check "local copies across filesystems"  "$BIN/dicomq-local" "$ID" "$XMD" "$SRC"
+  check "cross-fs object delivered intact" cmp -s "$SRC/$ID.dcm" "$XMD/new/$ID.dcm"
   rm -rf "$XMD"
 fi
 
@@ -130,7 +134,7 @@ mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
 ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
 "$BIN/dicomq-send" --once 2>/dev/null
 check "send delivers to the default maildir" test -f "$DICOMQ_SPOOL/aet/ARCHIVE/new/$ID.dcm"
-check "send dequeues after delivery"        test ! -e "$DICOMQ_SPOOL/queue/todo/$ID.env"
+check "send dequeues after delivery"        test ! -e "$DICOMQ_SPOOL/queue/todo/ARCHIVE/$ID.dcm"
 
 # fan-out: maildir + two forwards
 new_spool
@@ -138,33 +142,28 @@ mkdir -p "$DICOMQ_SPOOL/aet/FAN"/{tmp,new} "$DICOMQ_SPOOL/dest"/{PACS1,PACS2} \
          "$DICOMQ_SPOOL/route"/{PACS1,PACS2}/todo
 printf 'host: localhost\nport: 11178\naet: PACS1\n' > "$DICOMQ_SPOOL/dest/PACS1/remote"
 printf 'host: localhost\nport: 11179\naet: PACS2\n' > "$DICOMQ_SPOOL/dest/PACS2/remote"
-printf 'maildir ./ env\nforward PACS1\nforward PACS2\n' > "$DICOMQ_SPOOL/aet/FAN/deliver"
+printf 'maildir ./\nforward PACS1\nforward PACS2\n' > "$DICOMQ_SPOOL/aet/FAN/deliver"
 touch "$DICOMQ_SPOOL/route/PACS1/hold" "$DICOMQ_SPOOL/route/PACS2/hold"
 ID=$("$BIN/dicomq-inject" -c FAN "$WORK/test.dcm")
 "$BIN/dicomq-send" --once 2>/dev/null
 check "fan-out delivers to the maildir"     test -f "$DICOMQ_SPOOL/aet/FAN/new/$ID.dcm"
-check "fan-out delivers the envelope"       test -f "$DICOMQ_SPOOL/aet/FAN/new/$ID.env"
-check "fan-out routes to PACS1"             test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
-check "fan-out routes to PACS2"             test -f "$DICOMQ_SPOOL/route/PACS2/todo/$ID.env"
+check "fan-out routes to PACS1"             test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
+check "fan-out routes to PACS2"             test -f "$DICOMQ_SPOOL/route/PACS2/todo/$ID.dcm"
 check "fan-out object is hardlinked 3 ways" test "$(nlinks "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm")" = 3
-check "fan-out dequeues from todo"          test ! -e "$DICOMQ_SPOOL/queue/todo/$ID.env"
+check "fan-out dequeues from todo"          test ! -e "$DICOMQ_SPOOL/queue/todo/FAN/$ID.dcm"
 check "send respects hold flags (no agent spawned for held dest)" \
       test ! -e "$DICOMQ_SPOOL/route/PACS1/status"
 
-# corrupt quarantine, unknown AET, deferral
+# unknown AET, deferral (send opens no DICOM, so there is no corrupt path here)
 new_spool
-printf 'not an envelope\n' > "$DICOMQ_SPOOL/queue/todo/19990101000000000.1.000000.env"
-touch "$DICOMQ_SPOOL/queue/todo/19990101000000000.1.000000.dcm"
 ID=$("$BIN/dicomq-inject" -c NOSUCHAET "$WORK/test.dcm")
 mkdir -p "$DICOMQ_SPOOL/aet/DEFER"/{tmp,new}
 printf 'forward MISSINGDEST\n' > "$DICOMQ_SPOOL/aet/DEFER/deliver"
 ID2=$("$BIN/dicomq-inject" -c DEFER "$WORK/test.dcm")
 "$BIN/dicomq-send" --once 2>/dev/null
-check "unparseable envelope is quarantined" test -f "$DICOMQ_SPOOL/corrupt/19990101000000000.1.000000.env"
-check "quarantine keeps the object"         test -f "$DICOMQ_SPOOL/corrupt/19990101000000000.1.000000.dcm"
-check "unknown called AET is failed"        test -f "$DICOMQ_SPOOL/failed/$ID.env"
-check "failed envelope says why"            grep -q '^failed: .*unknown called AET' "$DICOMQ_SPOOL/failed/$ID.env"
-check "unsatisfiable instruction defers in place" test -f "$DICOMQ_SPOOL/queue/todo/$ID2.env"
+check "unknown called AET is failed"        test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+check "unsatisfiable instruction defers in place" \
+      test -f "$DICOMQ_SPOOL/queue/todo/DEFER/$ID2.dcm"
 
 # --- send: daemon mode reacts to new work via inotify ----------------------
 # inotify is Linux-only; elsewhere (e.g. macOS) dicomq-send falls back to the
@@ -193,23 +192,24 @@ mkdir -p "$DICOMQ_SPOOL/aet/FWD"/{tmp,new}
 printf 'host: localhost\nport: 11178\naet: PACS1\n' > "$DICOMQ_SPOOL/dest/PACS1/remote"
 printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/FWD/deliver"
 touch "$DICOMQ_SPOOL/route/PACS1/hold"
-ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+ID=$("$BIN/dicomq-inject" -c FWD -a MOD1 "$WORK/test.dcm")
 "$BIN/dicomq-send" --once 2>/dev/null
 OUT=$("$BIN/dicomq-queue")
 check "queue shows the route backlog"      grep -q 'route/PACS1.*1 message' <<<"$OUT"
 check "queue shows the hold flag"          grep -q 'held' <<<"$OUT"
 check "queue lists messages per dest"      grep -q "^$ID " <<<"$("$BIN/dicomq-queue" PACS1)"
+check "queue listing shows the AETs"       grep -q 'MOD1 -> FWD' <<<"$("$BIN/dicomq-queue" PACS1)"
 "$BIN/dicomq-ctl" hold "$ID" >/dev/null
-check "ctl hold moves the message"       test -f "$DICOMQ_SPOOL/hold/$ID.env"
-check "hold records the source queue"      grep -q '^held-from: route/PACS1/todo$' "$DICOMQ_SPOOL/hold/$ID.env"
+check "ctl hold moves the message"       test -f "$DICOMQ_SPOOL/hold/route/PACS1/todo/$ID.dcm"
+check "hold mirrors the source path"     test ! -e "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
 check "ctl hold is idempotent"           "$BIN/dicomq-ctl" hold "$ID"
 "$BIN/dicomq-ctl" release "$ID" >/dev/null
-check "ctl release returns it"           test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
-"$BIN/dicomq-ctl" fail "$ID" "operator says no" >/dev/null
-check "ctl fail moves to failed/"        test -f "$DICOMQ_SPOOL/failed/$ID.env"
-check "ctl fail records the reason"      grep -q '^failed: .*operator says no' "$DICOMQ_SPOOL/failed/$ID.env"
+check "ctl release returns it"           test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
+FOUT=$("$BIN/dicomq-ctl" fail "$ID" "operator says no" 2>&1)
+check "ctl fail moves to failed/"        test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+check "ctl fail logs the reason"         grep -q 'operator says no' <<<"$FOUT"
 "$BIN/dicomq-ctl" requeue "$ID" >/dev/null
-check "ctl requeue returns it to todo"   test -f "$DICOMQ_SPOOL/queue/todo/$ID.env"
+check "ctl requeue returns it to its AET queue" test -f "$DICOMQ_SPOOL/queue/todo/FWD/$ID.dcm"
 check_not "ctl refuses an unknown id"    "$BIN/dicomq-ctl" hold 19990101000000000.0.000000
 
 # --- recv (needs storescu/echoscu on PATH) --------------------------------
@@ -223,12 +223,12 @@ if command -v storescu >/dev/null; then
   check "recv accepts a store for a known AET" \
         storescu -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
   wait $RECV
-  ID=$(ls "$DICOMQ_SPOOL/queue/todo" 2>/dev/null | sed -n 's/\.env$//p' | head -1)
-  check "recv commits the message"           test -n "$ID" -a -f "$DICOMQ_SPOOL/queue/todo/$ID.dcm"
-  check "envelope has calling AET"           grep -q '^calling-aet: MOD1$' "$DICOMQ_SPOOL/queue/todo/$ID.env"
-  check "envelope has SOP instance UID"      grep -q '^sop-instance-uid: 1.2.276.0.7230010.3.1.4.42.1$' "$DICOMQ_SPOOL/queue/todo/$ID.env"
-  check "file meta stamped with source AET"  sh -c "dcmdump '$DICOMQ_SPOOL/queue/todo/$ID.dcm' | grep -q '0002,0016.*MOD1'"
-  check "file meta stamped with receiving AET" sh -c "dcmdump '$DICOMQ_SPOOL/queue/todo/$ID.dcm' | grep -q '0002,0018.*ARCHIVE'"
+  ID=$(ls "$DICOMQ_SPOOL/queue/todo/ARCHIVE" 2>/dev/null | sed -n 's/\.dcm$//p' | head -1)
+  DCM="$DICOMQ_SPOOL/queue/todo/ARCHIVE/$ID.dcm"
+  check "recv commits the message by AET"    test -n "$ID" -a -f "$DCM"
+  check "meta stamped with source AET"       meta_has "$DCM" '0002,0016.*MOD1'
+  check "meta stamped with receiving AET"    meta_has "$DCM" '0002,0018.*ARCHIVE'
+  check "meta has the SOP instance UID"      meta_has "$DCM" '0002,0003.*1.2.276.0.7230010.3.1.4.42.1'
 
   "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
   RECV=$!; wait_listen $PORT
@@ -264,8 +264,11 @@ fi
 if command -v storescp >/dev/null; then
   PORT=11178
   new_spool
+  # the operator sizes the retry ladder by creating retry/<k> dirs; here
+  # only retry/1 exists, so a rejection at retry/1 is terminal
   mkdir -p "$DICOMQ_SPOOL/aet/FWD"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1" \
-           "$DICOMQ_SPOOL/route/PACS1/todo" "$WORK/pacs1"
+           "$DICOMQ_SPOOL/route/PACS1/todo" "$DICOMQ_SPOOL/route/PACS1/retry/1" \
+           "$WORK/pacs1"
   printf "host: localhost\nport: $PORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
   printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/FWD/deliver"
 
@@ -290,17 +293,26 @@ if command -v storescp >/dev/null; then
   "$BIN/dicomq-remote" PACS1 2>/dev/null
   check "down destination writes a status file" test -f "$DICOMQ_SPOOL/route/PACS1/status"
   check "status has a next-attempt time"      grep -q '^next-attempt-after: ' "$DICOMQ_SPOOL/route/PACS1/status"
-  check "message survives a down destination" test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
-  check_not "envelope untouched by connection failure" \
-        grep -q '^attempt:' "$DICOMQ_SPOOL/route/PACS1/todo/$ID.env"
+  check "message survives a down destination" test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
+  check "a connection failure climbs no rung" test ! -e "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
 
-  # transcode policy: destination accepts implicit only, object is explicit
+  # transcode policy: destination accepts implicit only, object is explicit.
+  # A per-message rejection climbs the retry ladder (todo -> retry/1).
   printf 'ImplicitVRLittleEndian\ntranscode: never\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  rm -f "$DICOMQ_SPOOL/route/PACS1/status"
   storescp -od "$WORK/pacs1" $PORT 2>/dev/null & SCP=$!
   wait_listen $PORT
-  "$BIN/dicomq-remote" PACS1 2>/dev/null
-  check "transcode never fails the message"   test -f "$DICOMQ_SPOOL/failed/$ID.env"
-  check "failure names the syntax problem"    grep -q "transcode is 'never'" "$DICOMQ_SPOOL/failed/$ID.env"
+  RERR=$("$BIN/dicomq-remote" PACS1 2>&1)
+  check "transcode never demotes to retry/1"  test -f "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
+  check "demotion left todo empty"            test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+  check "demotion names the syntax problem"   grep -q "transcode is 'never'" <<<"$RERR"
+  # rejection at the top rung (no retry/2 dir) fails the message rather
+  # than creating retry/2 — the ladder depth is the directories present
+  age_out "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
+  RERR2=$("$BIN/dicomq-remote" PACS1 2>&1)
+  check "rejection at the top rung fails it"   test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+  check "no next rung is created"             test ! -e "$DICOMQ_SPOOL/route/PACS1/retry/2"
+  check "failure names the missing rung"      grep -q 'no retry/2 rung' <<<"$RERR2"
 
   printf 'ImplicitVRLittleEndian\ntranscode: lossless\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
   "$BIN/dicomq-ctl" requeue "$ID" >/dev/null
@@ -334,9 +346,9 @@ if command -v storescp >/dev/null; then
   touch "$DICOMQ_SPOOL/route/PACS1/hold"
   "$BIN/dicomq-send" --once 2>/dev/null
   rm "$DICOMQ_SPOOL/route/PACS1/hold"
-  "$BIN/dicomq-remote" PACS1 2>/dev/null
-  check "lossy target refused under 'lossless'" test -f "$DICOMQ_SPOOL/failed/$ID.env"
-  check "refusal names the lossy syntax"      grep -q "is lossy and transcode is 'lossless'" "$DICOMQ_SPOOL/failed/$ID.env"
+  LERR=$("$BIN/dicomq-remote" PACS1 2>&1)
+  check "lossy target refused under 'lossless'" test -f "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
+  check "refusal names the lossy syntax"      grep -q "is lossy and transcode is 'lossless'" <<<"$LERR"
 
   printf 'JPEGBaseline\ntranscode: as-needed\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
   "$BIN/dicomq-ctl" requeue "$ID" >/dev/null
@@ -374,7 +386,7 @@ if command -v openssl >/dev/null && storescu --help 2>&1 | grep -q anonymous-tls
   check "recv accepts a TLS store" \
         storescu +tla +cf "$CERTS/ca.pem" -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
   wait $RECV
-  check "TLS store is queued" test -n "$(ls -A "$DICOMQ_SPOOL/queue/todo")"
+  check "TLS store is queued" test -n "$(find "$DICOMQ_SPOOL/queue/todo" -name '*.dcm')"
 
   "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
   wait_listen $TPORT
@@ -410,7 +422,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   mkdir -p "$DICOMQ_SPOOL/aet/ROUTER"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1" \
            "$DICOMQ_SPOOL/route/PACS1/todo" "$WORK/endpacs"
   printf "host: localhost\nport: $PPORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
-  printf 'maildir ./ env\nforward PACS1\n' > "$DICOMQ_SPOOL/aet/ROUTER/deliver"
+  printf 'maildir ./\nforward PACS1\n' > "$DICOMQ_SPOOL/aet/ROUTER/deliver"
 
   storescp -od "$WORK/endpacs" $PPORT 2>/dev/null & SCP=$!
   "$BIN/dicomq-recv" --listen $RPORT --once 2>/dev/null & RECV=$!
@@ -420,11 +432,10 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   wait $RECV
   "$BIN/dicomq-send" --once 2>/dev/null
   check "e2e: maildir copy delivered"        test -n "$(ls "$DICOMQ_SPOOL/aet/ROUTER/new/" | grep '\.dcm$')"
-  check "e2e: envelope delivered beside it"  test -n "$(ls "$DICOMQ_SPOOL/aet/ROUTER/new/" | grep '\.env$')"
   check "e2e: forwarded to the PACS"         test -n "$(ls -A "$WORK/endpacs")"
-  check "e2e: every queue drained"           test -z "$(ls -A "$DICOMQ_SPOOL/queue/todo")$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
-  EENV=$(ls "$DICOMQ_SPOOL/aet/ROUTER/new/"*.env | head -1)
-  check "e2e: envelope records the modality" grep -q '^calling-aet: CT99$' "$EENV"
+  check "e2e: every queue drained"           test -z "$(find "$DICOMQ_SPOOL/queue/todo" "$DICOMQ_SPOOL/route/PACS1/todo" -name '*.dcm')"
+  EDCM=$(ls "$DICOMQ_SPOOL/aet/ROUTER/new/"*.dcm | head -1)
+  check "e2e: delivered object records the modality" meta_has "$EDCM" '0002,0016.*CT99'
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
 else
   echo "skip - end-to-end test (needs storescu and storescp)"

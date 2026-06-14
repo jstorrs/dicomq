@@ -3,6 +3,8 @@
 
 #include "common/spool.h"
 
+#include "common/kvfile.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -77,7 +79,7 @@ bool isReservedName(const std::string& name)
   return lower == "tmp" || lower == "new" || lower == "todo";
 }
 
-static std::string dirOf(const std::string& path)
+std::string dirOf(const std::string& path)
 {
   const size_t slash = path.rfind('/');
   if (slash == std::string::npos)
@@ -85,6 +87,16 @@ static std::string dirOf(const std::string& path)
   if (slash == 0)
     return "/";
   return path.substr(0, slash);
+}
+
+bool mkdirIfMissing(const std::string& path, std::string& err)
+{
+  if (mkdir(path.c_str(), 0755) != 0 && errno != EEXIST)
+  {
+    err = "cannot create '" + path + "': " + strerror(errno);
+    return false;
+  }
+  return fsyncPath(dirOf(path), err);
 }
 
 static bool flushToStableStorage(int fd)
@@ -150,7 +162,7 @@ std::vector<std::string> listIds(const std::string& dir)
   for (const auto& entry : fs::directory_iterator(dir, ec))
   {
     const std::string name = entry.path().filename().string();
-    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".env") == 0)
+    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".dcm") == 0)
       ids.push_back(name.substr(0, name.size() - 4));
   }
   std::sort(ids.begin(), ids.end());
@@ -279,17 +291,39 @@ bool isDir(const std::string& path)
 static const long BACKOFF_BASE = 420;    // ~7 minutes
 static const long BACKOFF_CAP = 21600;   // 6 hours
 
-long backoffSeconds(long ageSeconds)
+long backoffSeconds(long seconds)
 {
-  if (ageSeconds <= 0)
+  if (seconds <= 0)
     return 0;
-  const double b = 2.0 * sqrt(static_cast<double>(ageSeconds) * BACKOFF_BASE);
+  const double b = 2.0 * sqrt(static_cast<double>(seconds) * BACKOFF_BASE);
   return b > BACKOFF_CAP ? BACKOFF_CAP : static_cast<long>(b);
 }
 
-bool isDue(time_t now, time_t lastAttempt, time_t received)
+long retryBackoff(int level)
 {
-  return now - lastAttempt >= backoffSeconds(static_cast<long>(now - received));
+  if (level <= 0)
+    return 0;  // todo/: always due
+  // wait grows quadratically with the rung number (~7 min at rung 1,
+  // reaching the 6-hour cap by rung 8), so early retries are quick and
+  // late ones are spaced out
+  const long w = BACKOFF_BASE * static_cast<long>(level) * level;
+  return w > BACKOFF_CAP ? BACKOFF_CAP : w;
+}
+
+bool writeKeyValueCommitted(const Spool& sp, const KeyValueFile& kv,
+                            const std::string& finalPath, std::string& err)
+{
+  const std::string tmp = sp.queueTmp() + "/" +
+      finalPath.substr(finalPath.rfind('/') + 1) + ".w" +
+      std::to_string(getpid());
+  if (!kv.write(tmp, err))
+    return false;
+  if (!commitFile(tmp, finalPath, err))
+  {
+    unlink(tmp.c_str());
+    return false;
+  }
+  return true;
 }
 
 } // namespace dicomq

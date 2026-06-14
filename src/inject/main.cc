@@ -8,11 +8,13 @@
 //   dicomq-inject [-s <spool>] -c <called-aet> [-a <calling-aet>] <file.dcm>...
 //
 // Per file: read SOP class/instance and transfer syntax UIDs from the
-// file meta header, fabricate an envelope (peer: local), byte-copy the
-// object into queue/tmp/ — the source preamble and meta are preserved
-// as-is; some real files carry load-bearing preambles (dual TIFF/DICOM)
-// — and commit into queue/todo/ (.env last), the same protocol as
-// dicomq-recv. Prints each new message id on stdout.
+// file meta header (rejecting non-Part-10 input), stamp the
+// Source/Sending/ReceivingApplicationEntityTitle meta tags the receiver
+// writes, and save into queue/tmp/ then commit into
+// queue/todo/<called-aet>/ with a single atomic rename — the same
+// protocol as dicomq-recv. DCMTK preserves any load-bearing source
+// preamble (dual TIFF/DICOM) across the load/save. Prints each new
+// message id on stdout.
 //
 // Exit: 0 enqueued; 100 bad usage or unreadable/non-Part-10 input
 // (permanent); 111 spool failure (temporary).
@@ -27,7 +29,6 @@
 #include <cstring>
 #include <unistd.h>
 
-#include "common/envelope.h"
 #include "common/message.h"
 #include "common/spool.h"
 
@@ -86,28 +87,33 @@ int main(int argc, char **argv)
       return 100;
     }
 
+    // stamp the standard-blessed file meta dicomq-recv writes, so an
+    // injected object is self-describing for routing and downstream
+    // archives just like a received one
+    meta->putAndInsertString(DCM_SourceApplicationEntityTitle,
+                             callingAET.c_str());
+    meta->putAndInsertString(DCM_SendingApplicationEntityTitle,
+                             callingAET.c_str());
+    meta->putAndInsertString(DCM_ReceivingApplicationEntityTitle,
+                             calledAET.c_str());
+
     const std::string id = generateId();
+    const std::string aetDir = sp.queueTodoAET(sanitizeAET(calledAET));
     const std::string tmpDcm = dcmPath(sp.queueTmp(), id);
 
-    Envelope env;
-    env.add("id", id);
-    env.add("received", isoTimeMillis());
-    env.add("peer", "local");
-    env.add("calling-aet", callingAET);
-    env.add("called-aet", calledAET);
-    env.add("sop-class-uid", sopClass.c_str());
-    env.add("sop-instance-uid", sopInstance.c_str());
-    env.add("transfer-syntax-uid", xferUID.c_str());
-
-    // the same commit protocol as dicomq-recv: object first, envelope
-    // last; its appearance in todo/ is the commit point
-    if (!copyFile(file, tmpDcm, err)
-        || !commitFile(tmpDcm, dcmPath(sp.queueTodo(), id), err)
-        || !writeEnvelopeCommitted(sp, env, envPath(sp.queueTodo(), id), err))
+    // the same commit protocol as dicomq-recv: save into tmp, then one
+    // atomic rename into queue/todo/<called-aet>/ commits the message.
+    // EWM_fileformat preserves the loaded preamble (dual TIFF/DICOM).
+    const OFCondition saved = ff.saveFile(tmpDcm.c_str(),
+        ff.getDataset()->getOriginalXfer(), EET_ExplicitLength, EGL_recalcGL,
+        EPD_withoutPadding, 0, 0, EWM_fileformat);
+    if (saved.bad() || !mkdirIfMissing(aetDir, err)
+        || !commitFile(tmpDcm, dcmPath(aetDir, id), err))
     {
-      std::fprintf(stderr, "dicomq-inject: %s\n", err.c_str());
+      std::fprintf(stderr, "dicomq-inject: %s\n",
+                   saved.bad() ? saved.text() : err.c_str());
       unlink(tmpDcm.c_str());
-      removePair(sp.queueTodo(), id, err);
+      removeMessage(aetDir, id, err);
       return 111;
     }
     std::printf("%s\n", id.c_str());

@@ -6,21 +6,21 @@
 //
 //   dicomq-send [-s <spool>] [-i <scan-interval-seconds>] [--once]
 //
-// Each pass: route every committed message in queue/todo/ per its
-// called AET's deliver file (maildir instructions run dicomq-local,
+// Each pass: route every committed message in queue/todo/<called-AET>/
+// per that AET's deliver file (maildir instructions run dicomq-local,
 // forward instructions link into route/<DEST>/todo/), then trigger
-// dicomq-remote <DEST> for every destination with due messages — at
-// most one dicomq-remote per destination at a time, none while
-// route/<DEST>/hold exists or route/<DEST>/status says the destination
-// is backed off.
+// dicomq-remote <DEST> for every destination with a due message in its
+// todo/ or retry/<k>/ rungs — at most one dicomq-remote per destination
+// at a time, none while route/<DEST>/hold exists or route/<DEST>/status
+// says the destination is backed off.
 //
-// Unparseable envelopes are quarantined to corrupt/; a message for an
-// unknown called AET is failed; a message whose deliver instructions
-// cannot be satisfied right now (missing maildir, unknown destination)
-// is deferred in place with a logged reason.
+// A message for an unknown called AET is failed; one whose deliver
+// instructions cannot be satisfied right now (missing maildir, unknown
+// destination) is deferred in place with a logged reason.
 //
 // --once performs a single pass and waits for spawned agents — the
-// testing and cron-driven mode. Speaks no DICOM.
+// testing and cron-driven mode. Speaks no DICOM — routing is purely by
+// directory; the .dcm is never opened.
 
 #include <cerrno>
 #include <climits>
@@ -43,7 +43,7 @@
 #include <mach-o/dyld.h>
 #endif
 
-#include "common/envelope.h"
+#include "common/kvfile.h"
 #include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
@@ -131,21 +131,34 @@ static std::string resolveMaildir(const std::string& aetDir,
   return aetDir + "/" + arg;
 }
 
-// wait for new work: inotify on queue/todo/ where available (the kernel
-// queues events raised while we were busy routing, so no commit between
-// scan and wait is lost), with the periodic scan as backstop everywhere
+// wait for new work: inotify where available (the kernel queues events
+// raised while we were busy routing, so no commit between scan and wait
+// is lost), with the periodic scan as backstop everywhere. recv renames
+// objects into queue/todo/<AET>/, so we watch the parent for new AET
+// subdirs appearing and each subdir for objects moved into it.
 #ifdef __linux__
 static int inotifyFd = -1;
 
-static void watchTodo(const std::string& dir)
+static void watchAetDir(const std::string& aet)
+{
+  if (inotifyFd >= 0)
+    inotify_add_watch(inotifyFd, sp.queueTodoAET(aet).c_str(), IN_MOVED_TO);
+}
+
+static void watchQueue()
 {
   inotifyFd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-  if (inotifyFd >= 0
-      && inotify_add_watch(inotifyFd, dir.c_str(), IN_MOVED_TO) < 0)
+  if (inotifyFd < 0)
+    return;
+  if (inotify_add_watch(inotifyFd, sp.queueTodo().c_str(),
+                        IN_CREATE | IN_MOVED_TO) < 0)
   {
     close(inotifyFd);
     inotifyFd = -1;
+    return;
   }
+  for (const auto& aet : listSubdirs(sp.queueTodo()))
+    watchAetDir(aet);
 }
 
 static void waitForWork(long intervalSeconds)
@@ -157,40 +170,46 @@ static void waitForWork(long intervalSeconds)
   }
   struct pollfd pfd = { inotifyFd, POLLIN, 0 };
   poll(&pfd, 1, static_cast<int>(intervalSeconds * 1000));
-  char buf[4096];
-  while (read(inotifyFd, buf, sizeof(buf)) > 0)
-    ;  // drain; the scan that follows picks up everything
+  // drain events; a newly appeared AET subdir gets its own watch so its
+  // *later* objects wake us. Its first object is still caught by the
+  // scan that follows, and the periodic scan backstops any dropped event.
+  alignas(struct inotify_event) char buf[4096];
+  ssize_t n;
+  while ((n = read(inotifyFd, buf, sizeof(buf))) > 0)
+  {
+    for (char *p = buf; p < buf + n; )
+    {
+      const struct inotify_event *ev =
+          reinterpret_cast<const struct inotify_event *>(p);
+      if (ev->len > 0 && (ev->mask & IN_ISDIR)
+          && (ev->mask & (IN_CREATE | IN_MOVED_TO)))
+        watchAetDir(ev->name);
+      p += sizeof(struct inotify_event) + ev->len;
+    }
+  }
 }
 #else
-static void watchTodo(const std::string&) {}
+static void watchQueue() {}
 static void waitForWork(long intervalSeconds)
 {
   sleep(static_cast<unsigned>(intervalSeconds));
 }
 #endif
 
-// route one message; on success it leaves queue/todo/
-static void processMessage(const std::string& id)
+// route one message from queue/todo/<aet>/; on success it leaves there.
+// The called AET is the subdir name, so routing opens no DICOM.
+static void processMessage(const std::string& aet, const std::string& id)
 {
   std::string err;
-  Envelope env;
-  if (!Envelope::read(envPath(sp.queueTodo(), id), env, err))
-  {
-    logmsg("quarantining " + id + ": " + err);
-    if (!movePairRaw(sp, sp.queueTodo(), sp.corruptDir(), id, err))
-      logmsg("cannot quarantine " + id + ": " + err);
-    return;
-  }
+  const std::string srcDir = sp.queueTodoAET(aet);
+  const std::string aetDir = sp.aetDir(aet);
 
-  const std::string called = sanitizeAET(env.get("called-aet"));
-  const std::string aetDir = sp.aetDir(called);
-  if (env.get("called-aet").empty() || !isDir(aetDir))
+  // recv only creates queue/todo/<AET>/ under a validated aet/<AET>/, so
+  // this is a defensive guard for a hand-placed object
+  if (!isDir(aetDir))
   {
-    logmsg("failing " + id + ": unknown called AET '" + env.get("called-aet")
-           + "'");
-    Envelope failed = env;
-    failed.add("failed", isoTime(time(nullptr)) + " unknown called AET");
-    if (!movePairAnnotated(sp, sp.queueTodo(), sp.failedDir(), id, failed, err))
+    logmsg("failing " + id + ": unknown called AET '" + aet + "'");
+    if (!moveMessage(srcDir, sp.failedDir(), id, err))
       logmsg("cannot fail " + id + ": " + err);
     return;
   }
@@ -227,32 +246,18 @@ static void processMessage(const std::string& id)
   {
     if (in.kind == DeliverInstruction::Kind::Forward)
     {
-      const std::string todo = sp.routeTodo(in.arg);
-      if (!linkIdempotent(dcmPath(sp.queueTodo(), id), dcmPath(todo, id), err))
+      // hardlink the object into the destination queue; EEXIST means a
+      // crashed pass already routed it here (idempotent fan-out)
+      if (!linkMessage(srcDir, sp.routeTodo(in.arg), id, err))
       {
         logmsg("deferring " + id + ": " + err);
         return;
       }
-      // don't clobber an existing copy: a crashed pass may have routed
-      // it already and dicomq-remote may have annotated attempts since
-      if (!pathExists(envPath(todo, id)))
-      {
-        const std::string tmp = sp.queueTmp() + "/" + id + ".env.route";
-        if (!copyFile(envPath(sp.queueTodo(), id), tmp, err)
-            || !commitFile(tmp, envPath(todo, id), err))
-        {
-          logmsg("deferring " + id + ": " + err);
-          unlink(tmp.c_str());
-          return;
-        }
-      }
     }
     else
     {
-      std::vector<std::string> args{id, resolveMaildir(aetDir, in.arg)};
-      if (in.withEnv)
-        args.push_back("env");
-      const int rc = runChild("dicomq-local", args);
+      const int rc = runChild("dicomq-local",
+                              {id, resolveMaildir(aetDir, in.arg), srcDir});
       if (rc != 0)
       {
         logmsg("deferring " + id + ": dicomq-local exited " +
@@ -262,7 +267,7 @@ static void processMessage(const std::string& id)
     }
   }
 
-  if (!removePair(sp.queueTodo(), id, err))
+  if (!removeMessage(srcDir, id, err))
     logmsg("routed " + id + " but cannot dequeue: " + err);
 }
 
@@ -282,6 +287,29 @@ static void reapAgents(bool block)
   }
 }
 
+static bool anyDue(const std::string& dir, int level, time_t now)
+{
+  for (const auto& id : listIds(dir))
+    if (messageDue(dir, id, level, now))
+      return true;
+  return false;
+}
+
+// a destination has work if its todo/ holds anything (level 0 = always
+// due) or any retry/<k> rung holds a message past its backoff
+static bool destHasDueWork(const std::string& dest, time_t now)
+{
+  if (anyDue(sp.routeTodo(dest), 0, now))
+    return true;
+  for (const auto& lvl : listSubdirs(sp.routeRetryRoot(dest)))
+  {
+    const int k = atoi(lvl.c_str());
+    if (k >= 1 && anyDue(sp.routeRetry(dest, k), k, now))
+      return true;
+  }
+  return false;
+}
+
 static void maybeTrigger(const std::string& dest)
 {
   if (running.count(dest))
@@ -290,26 +318,19 @@ static void maybeTrigger(const std::string& dest)
     return;
 
   std::string err;
-  Envelope status;
-  if (Envelope::read(sp.routeStatus(dest), status, err))
+  KeyValueFile status;
+  if (KeyValueFile::read(sp.routeStatus(dest), status, err))
   {
     const time_t next = parseIsoTime(status.get("next-attempt-after"));
     if (next != 0 && time(nullptr) < next)
       return;  // destination-level backoff (dead-site cache)
   }
 
-  const time_t now = time(nullptr);
-  const std::string todo = sp.routeTodo(dest);
-  for (const auto& id : listIds(todo))
+  if (destHasDueWork(dest, time(nullptr)))
   {
-    Envelope env;
-    if (Envelope::read(envPath(todo, id), env, err)
-        && !messageDue(todo, id, env, now))
-      continue;  // attempted and still backing off
     const pid_t pid = spawn("dicomq-remote", {dest});
     if (pid > 0)
       running[dest] = pid;
-    return;
   }
 }
 
@@ -354,13 +375,14 @@ int main(int argc, char **argv)
   }
 
   if (!once)
-    watchTodo(sp.queueTodo());
+    watchQueue();
 
   for (;;)
   {
     reapAgents(false);
-    for (const auto& id : listIds(sp.queueTodo()))
-      processMessage(id);
+    for (const auto& aet : listSubdirs(sp.queueTodo()))
+      for (const auto& id : listIds(sp.queueTodoAET(aet)))
+        processMessage(aet, id);
     for (const auto& dest : listSubdirs(sp.routeRoot()))
       maybeTrigger(dest);
     if (once)

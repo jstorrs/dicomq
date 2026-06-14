@@ -3,17 +3,15 @@
 
 // dicomq-local — maildir-style local delivery (qmail-local analog).
 //
-//   dicomq-local [-s <spool>] <id> <dir> [env]
+//   dicomq-local [-s <spool>] <id> <dir> <srcdir>
 //
-// Delivers queue/todo/<id> into <dir>/new/. With "env", the envelope is
-// copied to <dir>/new/<id>.env FIRST so the object's appearance remains
-// the commit point. The object is hardlinked when <dir> is on the spool
-// filesystem (EEXIST = already delivered = success); when it is not
-// (link gives EXDEV), it is copied through the maildir's own tmp/ and
-// committed by rename — which is what maildirs have tmp/ for. Never
-// creates <dir> or its subdirectories. Delivered files may share an
-// inode with the spool: consumers may move or delete them, never modify
-// in place.
+// Delivers <srcdir>/<id>.dcm into <dir>/new/. The object is hardlinked
+// when <dir> is on the spool filesystem (EEXIST = already delivered =
+// success); when it is not (link gives EXDEV), it is copied through the
+// maildir's own tmp/ and committed by rename — which is what maildirs
+// have tmp/ for. Never creates <dir> or its subdirectories. Delivered
+// files may share an inode with the spool: consumers may move or delete
+// them, never modify in place.
 //
 // Exit: 0 delivered; 100 bad usage; 111 temporary failure (missing
 // target, unreadable message) — the caller leaves the message queued.
@@ -57,29 +55,26 @@ static bool deliverFile(const std::string& src, const std::string& dir,
 
 int main(int argc, char **argv)
 {
-  std::string spoolArg;
   int opt;
   while ((opt = getopt(argc, argv, "s:")) != -1)
   {
-    if (opt == 's')
-      spoolArg = optarg;
-    else
+    if (opt != 's')  // -s accepted for suite consistency; unused here
     {
-      std::fprintf(stderr, "usage: dicomq-local [-s <spool>] <id> <dir> [env]\n");
+      std::fprintf(stderr,
+                   "usage: dicomq-local [-s <spool>] <id> <dir> <srcdir>\n");
       return 100;
     }
   }
-  if (argc - optind < 2 || argc - optind > 3
-      || (argc - optind == 3 && strcmp(argv[optind + 2], "env") != 0))
+  if (argc - optind != 3)
   {
-    std::fprintf(stderr, "usage: dicomq-local [-s <spool>] <id> <dir> [env]\n");
+    std::fprintf(stderr,
+                 "usage: dicomq-local [-s <spool>] <id> <dir> <srcdir>\n");
     return 100;
   }
   const std::string id = argv[optind];
   const std::string dir = argv[optind + 1];
-  const bool withEnv = (argc - optind == 3);
+  const std::string srcDir = argv[optind + 2];
 
-  const Spool sp(spoolArg);
   std::string err;
 
   if (!isDir(dir + "/new"))
@@ -89,13 +84,7 @@ int main(int argc, char **argv)
     return 111;
   }
 
-  // envelope first (when requested): the object's appearance commits
-  if (withEnv && !deliverFile(envPath(sp.queueTodo(), id), dir, id + ".env", err))
-  {
-    std::fprintf(stderr, "dicomq-local: %s\n", err.c_str());
-    return 111;
-  }
-  if (!deliverFile(dcmPath(sp.queueTodo(), id), dir, id + ".dcm", err))
+  if (!deliverFile(dcmPath(srcDir, id), dir, id + ".dcm", err))
   {
     std::fprintf(stderr, "dicomq-local: %s\n", err.c_str());
     return 111;

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Judd Storrs <jstorrs@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "common/envelope.h"
+#include "common/kvfile.h"
 
 #include <cerrno>
 #include <cstring>
@@ -9,7 +9,7 @@
 
 namespace dicomq {
 
-std::string Envelope::get(const std::string& key) const
+std::string KeyValueFile::get(const std::string& key) const
 {
   for (const auto& f : fields)
     if (f.first == key)
@@ -17,7 +17,7 @@ std::string Envelope::get(const std::string& key) const
   return "";
 }
 
-size_t Envelope::count(const std::string& key) const
+size_t KeyValueFile::count(const std::string& key) const
 {
   size_t n = 0;
   for (const auto& f : fields)
@@ -26,12 +26,13 @@ size_t Envelope::count(const std::string& key) const
   return n;
 }
 
-void Envelope::add(const std::string& key, const std::string& value)
+void KeyValueFile::add(const std::string& key, const std::string& value)
 {
   fields.emplace_back(key, value);
 }
 
-bool Envelope::read(const std::string& path, Envelope& env, std::string& err)
+bool KeyValueFile::read(const std::string& path, KeyValueFile& kv,
+                        std::string& err)
 {
   std::ifstream in(path);
   if (!in)
@@ -39,7 +40,7 @@ bool Envelope::read(const std::string& path, Envelope& env, std::string& err)
     err = "cannot open '" + path + "': " + strerror(errno);
     return false;
   }
-  env.fields.clear();
+  kv.fields.clear();
   std::string line;
   while (std::getline(in, line))
   {
@@ -48,10 +49,10 @@ bool Envelope::read(const std::string& path, Envelope& env, std::string& err)
     const size_t colon = line.find(": ");
     if (colon == std::string::npos || colon == 0)
     {
-      err = "malformed envelope line in '" + path + "': " + line;
+      err = "malformed line in '" + path + "': " + line;
       return false;
     }
-    env.fields.emplace_back(line.substr(0, colon), line.substr(colon + 2));
+    kv.fields.emplace_back(line.substr(0, colon), line.substr(colon + 2));
   }
   if (in.bad())
   {
@@ -61,7 +62,7 @@ bool Envelope::read(const std::string& path, Envelope& env, std::string& err)
   return true;
 }
 
-bool Envelope::write(const std::string& path, std::string& err) const
+bool KeyValueFile::write(const std::string& path, std::string& err) const
 {
   std::ofstream out(path, std::ios::trunc);
   if (!out)
