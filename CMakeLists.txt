@@ -3,7 +3,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(dicomq VERSION 0.1.0 LANGUAGES CXX)
 
-find_package(DCMTK 3.6.8 REQUIRED CONFIG)
+# 3.7.0 is the floor: it fixes CVE-2025-14607 (remote memory corruption in
+# DcmByteString::makeDicomByteString, in dcmdata -- reachable from the DICOM
+# parsing dicomq does), present through 3.6.9. DCMTKConfigVersion.cmake reports
+# DCMTK_PACKAGE_VERSION (major.minor.build = 3.7.0), so this check resolves
+# correctly against a real 3.7.0 install.
+find_package(DCMTK 3.7.0 REQUIRED CONFIG)
 
 include(GNUInstallDirs)   # provides CMAKE_INSTALL_BINDIR used by install()
 enable_testing()
