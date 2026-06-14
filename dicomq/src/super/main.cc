@@ -51,11 +51,8 @@ static std::vector<std::string> allQueues(const Spool& sp)
 static std::string findMessage(const Spool& sp, const std::string& id)
 {
   for (const auto& rel : allQueues(sp))
-  {
-    struct stat st;
-    if (stat(envPath(sp.root + "/" + rel, id).c_str(), &st) == 0)
+    if (pathExists(envPath(sp.root + "/" + rel, id)))
       return rel;
-  }
   return "";
 }
 

@@ -136,8 +136,7 @@ int main(int argc, char **argv)
   for (const auto& dest : listSubdirs(sp.routeRoot()))
   {
     std::string extra;
-    struct stat st;
-    if (stat(sp.routeHoldFlag(dest).c_str(), &st) == 0)
+    if (pathExists(sp.routeHoldFlag(dest)))
       extra += "[held] ";
     Envelope status;
     std::string err;

@@ -55,18 +55,6 @@ static void logmsg(const std::string& m)
   std::fprintf(stderr, "dicomq-send: %s\n", m.c_str());
 }
 
-static bool isDir(const std::string& path)
-{
-  struct stat st;
-  return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-}
-
-static bool fileExists(const std::string& path)
-{
-  struct stat st;
-  return stat(path.c_str(), &st) == 0;
-}
-
 static std::string selfExecutable()
 {
 #ifdef __APPLE__
@@ -95,7 +83,7 @@ static std::string siblingPath(const char *name)
   if (slash != std::string::npos)
   {
     const std::string candidate = self.substr(0, slash + 1) + name;
-    if (fileExists(candidate))
+    if (pathExists(candidate))
       return candidate;
   }
   return name;  // execvp will search PATH
@@ -244,7 +232,7 @@ static void processMessage(const std::string& id)
       }
       // don't clobber an existing copy: a crashed pass may have routed
       // it already and dicomq-remote may have annotated attempts since
-      if (!fileExists(envPath(todo, id)))
+      if (!pathExists(envPath(todo, id)))
       {
         const std::string tmp = sp.queueTmp() + "/" + id + ".env.route";
         if (!copyFile(envPath(sp.queueTodo(), id), tmp, err)
@@ -295,7 +283,7 @@ static void maybeTrigger(const std::string& dest)
 {
   if (running.count(dest))
     return;
-  if (fileExists(sp.routeHoldFlag(dest)))
+  if (pathExists(sp.routeHoldFlag(dest)))
     return;
 
   std::string err;

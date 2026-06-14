@@ -68,8 +68,7 @@ static void cleanOrphans(const std::string& dir)
       continue;
     const std::string env =
         dir + "/" + name.substr(0, name.size() - 4) + ".env";
-    struct stat st;
-    if (stat(env.c_str(), &st) == 0)
+    if (pathExists(env))
       continue;  // committed message, not ours to touch
     const std::string p = entry.path().string();
     if (olderThanCutoff(p))

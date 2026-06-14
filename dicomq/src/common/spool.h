@@ -63,6 +63,11 @@ std::string isoTimeMillis();
 // Free bytes on the filesystem holding path, or -1.
 long long freeBytes(const std::string& path);
 
+// Filesystem predicates: pathExists is any stat-able entry; isDir is a
+// directory. Both report false (never an error) for a missing path.
+bool pathExists(const std::string& path);
+bool isDir(const std::string& path);
+
 // qmail's quadratic retry schedule: a message that has been attempted
 // is due again when (now - last attempt) >= backoffSeconds(age). Grows
 // as 2*sqrt(age*BASE), so successive attempts happen at ages ~BASE*n^2;

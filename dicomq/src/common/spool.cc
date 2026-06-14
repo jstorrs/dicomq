@@ -261,6 +261,18 @@ long long freeBytes(const std::string& path)
   return static_cast<long long>(vfs.f_bavail) * vfs.f_frsize;
 }
 
+bool pathExists(const std::string& path)
+{
+  struct stat st;
+  return stat(path.c_str(), &st) == 0;
+}
+
+bool isDir(const std::string& path)
+{
+  struct stat st;
+  return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 static const long BACKOFF_BASE = 420;    // ~7 minutes
 static const long BACKOFF_CAP = 21600;   // 6 hours
 

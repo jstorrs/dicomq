@@ -63,12 +63,6 @@ static void logmsg(const std::string& m)
   std::fprintf(stderr, "dicomq-recv: %s\n", m.c_str());
 }
 
-static bool isDir(const std::string& path)
-{
-  struct stat st;
-  return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-}
-
 // ---------------------------------------------------------------------------
 // per-store state shared with the DIMSE callback
 
@@ -336,9 +330,8 @@ static DcmTLSTransportLayer *makeTLSLayer(const std::string& dir,
     err = "cannot load '" + key + "' / '" + cert + "'";
     return nullptr;
   }
-  struct stat st;
   const std::string ca = dir + "/ca.pem";
-  if (stat(ca.c_str(), &st) == 0)
+  if (pathExists(ca))
   {
     if (layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).bad())
     {

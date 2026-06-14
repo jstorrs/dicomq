@@ -226,9 +226,8 @@ int main(int argc, char **argv)
   }
 
   // dest/<DEST>/tls/ exists => DICOM TLS to this destination
-  struct stat st;
   const std::string tlsDir = sp.destDir(destName) + "/tls";
-  const bool useTLS = (stat(tlsDir.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+  const bool useTLS = isDir(tlsDir);
   if (useTLS)
   {
     DcmTLSTransportLayer::initializeOpenSSL();
@@ -237,7 +236,7 @@ int main(int argc, char **argv)
     bool ok = layer->setTLSProfile(TSP_Profile_BCP195).good()
               && layer->activateCipherSuites().good();
     const std::string ca = tlsDir + "/ca.pem";
-    if (ok && stat(ca.c_str(), &st) == 0)
+    if (ok && pathExists(ca))
     {
       ok = layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).good();
       layer->setCertificateVerification(DCV_requireCertificate);
@@ -245,7 +244,7 @@ int main(int argc, char **argv)
     else
       layer->setCertificateVerification(DCV_ignoreCertificate);
     const std::string key = tlsDir + "/key.pem", cert = tlsDir + "/cert.pem";
-    if (ok && stat(key.c_str(), &st) == 0)
+    if (ok && pathExists(key))
       ok = layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).good()
            && layer->setCertificateFile(cert.c_str(), DCF_Filetype_PEM, TSP_Profile_BCP195).good()
            && layer->checkPrivateKeyMatchesCertificate();
