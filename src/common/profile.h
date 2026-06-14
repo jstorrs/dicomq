@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Judd Storrs <jstorrs@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #ifndef DICOMQ_PROFILE_H
 #define DICOMQ_PROFILE_H
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Judd Storrs <jstorrs@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // dicomq-inject — local submission (qmail-inject analog). Enqueues a
 // DICOM file as if it had been received, for testing the queue without
 // DICOM networking and for re-queueing objects (e.g. from failed/).

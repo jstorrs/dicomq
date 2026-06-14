@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Judd Storrs <jstorrs@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // dicomq-remote — C-STORE forwarder for one destination (qmail-remote
 // analog).
 //

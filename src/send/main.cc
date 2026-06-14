@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Judd Storrs <jstorrs@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // dicomq-send — queue runner (qmail-send analog). The one long-running
 // process; owns all routing decisions.
 //

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Judd Storrs <jstorrs@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // dicomq-recv — DICOM C-STORE receiver (qmail-smtpd analog).
 //
 //   dicomq-recv [-s <spool>] [-w <watermark-MB>] [--listen <port>] [--once]

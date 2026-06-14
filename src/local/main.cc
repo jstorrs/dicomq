@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Judd Storrs <jstorrs@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // dicomq-local — maildir-style local delivery (qmail-local analog).
 //
 //   dicomq-local [-s <spool>] <id> <dir> [env]

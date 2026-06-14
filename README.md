@@ -173,3 +173,15 @@ bash test/run-tests.sh <bindir>    # or: ctest --test-dir <builddir>
 
 The integration suite drives the real binaries against a throwaway
 spool, including network legs against DCMTK's storescu/storescp.
+
+## License
+
+dicomq is licensed under the **GNU General Public License, version 3 or
+later** (GPL-3.0-or-later); see [`LICENSE`](LICENSE). Because the edge
+programs link DCMTK's TLS support against OpenSSL, the license grant
+includes an OpenSSL linking exception (a GPL §7 additional permission).
+
+dicomq builds against [DCMTK](https://dicom.offis.de/dcmtk) (OFFIS e.V.,
+BSD-style license) rather than bundling it. DCMTK's copyright notice is
+reproduced in [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) for compliance
+when distributing dicomq in binary form.

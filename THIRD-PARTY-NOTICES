@@ -1,3 +1,17 @@
+THIRD-PARTY NOTICES
+===================
+
+dicomq itself is licensed under GPL-3.0-or-later (see the LICENSE file).
+
+dicomq is NOT distributed with the source code of its dependencies. The
+notice(s) below apply to third-party libraries that dicomq links against,
+and are reproduced here to satisfy the binary-redistribution terms of those
+licenses when dicomq is distributed in compiled form.
+
+-------------------------------------------------------------------------------
+DCMTK — OFFIS e.V. (https://dicom.offis.de/dcmtk) — BSD-style license
+-------------------------------------------------------------------------------
+
 
 COPYRIGHT
 
