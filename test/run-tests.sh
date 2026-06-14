@@ -167,18 +167,24 @@ check "failed envelope says why"            grep -q '^failed: .*unknown called A
 check "unsatisfiable instruction defers in place" test -f "$DICOMQ_SPOOL/queue/todo/$ID2.env"
 
 # --- send: daemon mode reacts to new work via inotify ----------------------
-new_spool
-mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
-"$BIN/dicomq-send" -i 60 2>/dev/null & SEND=$!
-sleep 0.5
-ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
-DELIVERED=no
-for _ in $(seq 1 30); do
-  [ -f "$DICOMQ_SPOOL/aet/ARCHIVE/new/$ID.dcm" ] && { DELIVERED=yes; break; }
-  sleep 0.1
-done
-kill $SEND 2>/dev/null; wait $SEND 2>/dev/null
-check "daemon send delivers promptly (inotify, not the 60s scan)" test "$DELIVERED" = yes
+# inotify is Linux-only; elsewhere (e.g. macOS) dicomq-send falls back to the
+# periodic scan, so sub-scan-interval delivery is not expected. Skip there.
+if [ "$(uname)" = Linux ]; then
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
+  "$BIN/dicomq-send" -i 60 2>/dev/null & SEND=$!
+  sleep 0.5
+  ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
+  DELIVERED=no
+  for _ in $(seq 1 30); do
+    [ -f "$DICOMQ_SPOOL/aet/ARCHIVE/new/$ID.dcm" ] && { DELIVERED=yes; break; }
+    sleep 0.1
+  done
+  kill $SEND 2>/dev/null; wait $SEND 2>/dev/null
+  check "daemon send delivers promptly (inotify, not the 60s scan)" test "$DELIVERED" = yes
+else
+  echo "skip - daemon send prompt delivery (no inotify on $(uname))"
+fi
 
 # --- queue + ctl --------------------------------------------------------
 new_spool
