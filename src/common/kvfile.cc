@@ -5,9 +5,12 @@
 
 #include <cerrno>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 namespace dicomq {
+
+namespace fs = std::filesystem;
 
 std::string KeyValueFile::get(const std::string &key) const {
   for (const auto &f : fields)
@@ -30,6 +33,14 @@ void KeyValueFile::add(const std::string &key, const std::string &value) {
 
 bool KeyValueFile::read(const std::string &path, KeyValueFile &kv,
                         std::string &err) {
+  // Distinguish "absent" from other open failures via std::filesystem
+  // rather than errno after an ifstream failure (not standard-guaranteed).
+  std::error_code ec;
+  if (!fs::exists(path, ec)) {
+    err = "cannot open '" + path +
+          "': " + (ec ? ec.message() : "no such file or directory");
+    return false;
+  }
   std::ifstream in(path);
   if (!in) {
     err = "cannot open '" + path + "': " + strerror(errno);

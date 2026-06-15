@@ -8,23 +8,38 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 namespace dicomq {
 
+namespace fs = std::filesystem;
+
 // Shared line reader for profile files: trims whitespace, skips blank
-// lines and '#' comments. Returns false on open failure with errno in
-// err, unless missingOk.
+// lines and '#' comments. A genuinely absent file is reported via
+// `missing` when missingOk (the caller then uses a compiled-in default);
+// otherwise it is an error. Existence is decided with std::filesystem so
+// the "missing optional config" case never rides on errno being set
+// after an ifstream open failure (which the standard does not promise).
 static bool readProfileLines(const std::string &path,
                              std::vector<std::string> &lines, bool missingOk,
                              bool &missing, std::string &err) {
   missing = false;
-  std::ifstream in(path);
-  if (!in) {
-    if (missingOk && errno == ENOENT) {
+  std::error_code ec;
+  if (!fs::exists(path, ec)) {
+    if (ec) {
+      err = "cannot stat '" + path + "': " + ec.message();
+      return false;
+    }
+    if (missingOk) {
       missing = true;
       return true;
     }
+    err = "cannot open '" + path + "': no such file or directory";
+    return false;
+  }
+  std::ifstream in(path);
+  if (!in) {
     err = "cannot open '" + path + "': " + strerror(errno);
     return false;
   }
