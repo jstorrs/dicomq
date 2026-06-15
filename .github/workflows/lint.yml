@@ -1,0 +1,23 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # lets you trigger a run manually from the Actions tab / gh
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest   # layout check needs no DCMTK, so keep it fast
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Check formatting
+        run: |
+          files=$(git ls-files 'src/*.cc' 'src/*.h' 'test/*.cc')
+          # uvx fetches the pinned clang-format on demand (== local +
+          # pre-commit). --Werror turns any reformatting it would do into a
+          # non-zero exit, so unformatted code fails the job.
+          uvx clang-format@21.1.8 --dry-run --Werror $files
