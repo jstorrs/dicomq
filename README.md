@@ -5,7 +5,7 @@ is the architecture contract; this file is how to run it.
 
 ## Build
 
-Requires CMake ≥ 3.16 and DCMTK ≥ 3.6.8 with development headers
+Requires CMake ≥ 3.16 and DCMTK ≥ 3.7.0 with development headers
 (`libdcmtk-dev` on Debian/Ubuntu provides the CMake package config).
 
 ```sh
