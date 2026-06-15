@@ -84,9 +84,18 @@ std::string dirOf(const std::string &path) {
 }
 
 bool mkdirIfMissing(const std::string &path, std::string &err) {
-  if (mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
-    err = "cannot create '" + path + "': " + strerror(errno);
-    return false;
+  if (mkdir(path.c_str(), 0755) != 0) {
+    if (errno != EEXIST) {
+      err = "cannot create '" + path + "': " + strerror(errno);
+      return false;
+    }
+    // EEXIST only excuses an existing *directory*. A regular file (or
+    // anything else) at this path is a misconfigured spool: report it
+    // here rather than letting a later rename into it fail obscurely.
+    if (!isDir(path)) {
+      err = "'" + path + "' exists but is not a directory";
+      return false;
+    }
   }
   return fsyncPath(dirOf(path), err);
 }
@@ -132,9 +141,21 @@ bool commitFile(const std::string &tmpPath, const std::string &finalPath,
 
 bool linkIdempotent(const std::string &from, const std::string &to,
                     std::string &err) {
-  if (link(from.c_str(), to.c_str()) != 0 && errno != EEXIST) {
-    err = "cannot link '" + from + "' to '" + to + "': " + strerror(errno);
-    return false;
+  if (link(from.c_str(), to.c_str()) != 0) {
+    if (errno != EEXIST) {
+      err = "cannot link '" + from + "' to '" + to + "': " + strerror(errno);
+      return false;
+    }
+    // EEXIST is the crash-replay case only when `to` is already the same
+    // inode as `from`. A different inode means an id collision or a stale
+    // wrong file; treating it as delivered would let the source be
+    // dequeued, so fail loudly instead.
+    struct stat sf, st;
+    if (stat(from.c_str(), &sf) != 0 || stat(to.c_str(), &st) != 0 ||
+        sf.st_dev != st.st_dev || sf.st_ino != st.st_ino) {
+      err = "'" + to + "' already exists and differs from '" + from + "'";
+      return false;
+    }
   }
   return fsyncPath(dirOf(to), err);
 }

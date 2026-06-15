@@ -65,6 +65,12 @@ add_executable(dicomq-unit-profile test/unit-profile.cc)
 target_link_libraries(dicomq-unit-profile PRIVATE dicomq-common)
 add_test(NAME dicomq-unit-profile COMMAND dicomq-unit-profile)
 
+# Filesystem-helper edge cases (EEXIST-wrong-inode, non-directory paths,
+# absent vs required config) — pure, no DICOM networking required.
+add_executable(dicomq-unit-spool test/unit-spool.cc)
+target_link_libraries(dicomq-unit-spool PRIVATE dicomq-common)
+add_test(NAME dicomq-unit-spool COMMAND dicomq-unit-spool)
+
 add_test(NAME dicomq-integration
   COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/test/run-tests.sh"
                "$<TARGET_FILE_DIR:dicomq-send>")

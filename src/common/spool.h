@@ -139,10 +139,11 @@ bool isReservedName(const std::string &name);
 // Directory portion of path ("." if none, "/" for a root entry).
 std::string dirOf(const std::string &path);
 
-// mkdir(path) treating EEXIST as success, then fsync the parent so the
-// new directory survives a crash. Intermediate parents must already
-// exist (the spool skeleton is operator-created; this only fills in the
-// per-AET and per-retry-rung leaves dicomq owns).
+// mkdir(path) treating an existing *directory* as success, then fsync
+// the parent so the new directory survives a crash. Fails if the path
+// exists as a non-directory (a misconfigured spool). Intermediate
+// parents must already exist (the spool skeleton is operator-created;
+// this only fills in the per-AET and per-retry-rung leaves dicomq owns).
 bool mkdirIfMissing(const std::string &path, std::string &err);
 
 // fsync the file or directory at path. On failure returns false and
@@ -155,9 +156,11 @@ bool fsyncPath(const std::string &path, std::string &err);
 bool commitFile(const std::string &tmpPath, const std::string &finalPath,
                 std::string &err);
 
-// link(2) from -> to, treating EEXIST as success: ids are unique, so
-// "already linked" means a previous (possibly crashed) pass already did
-// this work. Fsyncs the containing directory on success.
+// link(2) from -> to, treating EEXIST as success only when `to` is
+// already the same inode as `from`: ids are unique, so "already linked"
+// means a previous (possibly crashed) pass already did this work. An
+// existing `to` with a different inode is an id collision or stale file
+// and fails. Fsyncs the containing directory on success.
 bool linkIdempotent(const std::string &from, const std::string &to,
                     std::string &err);
 
