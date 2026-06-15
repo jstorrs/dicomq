@@ -28,51 +28,51 @@ struct Message {
   bool isBatch = false;
 };
 
-std::string dcmPath(const std::string& dir, const std::string& id);
+std::string dcmPath(const std::string &dir, const std::string &id);
 
 // Path of message <id> in dir: dir/<id>.dcm for a file, dir/<id> for a
 // batch directory.
-std::string messagePath(const std::string& dir, const std::string& id,
+std::string messagePath(const std::string &dir, const std::string &id,
                         bool isBatch);
 
 // Every committed message in dir — files ending ".dcm" (isBatch=false)
 // and subdirectories (isBatch=true) — sorted by id, which is receive/seal
 // order. Missing dir = empty.
-std::vector<Message> listMessages(const std::string& dir);
+std::vector<Message> listMessages(const std::string &dir);
 
 // Recursively hardlink batch <id>/ from srcParent into a fresh directory
 // <id>/ under dstParent: the new directory gets its own mtime (a private
 // retry-backoff clock) while the member objects share inodes (fan-out and
 // copy-on-demote cost no data copy). Idempotent (EEXIST tolerated).
-bool linkBatchTree(const std::string& srcParent, const std::string& dstParent,
-                   const std::string& id, std::string& err);
+bool linkBatchTree(const std::string &srcParent, const std::string &dstParent,
+                   const std::string &id, std::string &err);
 
 // Move message <id> from fromDir to toDir with a single rename(2) — of a
 // file (isBatch=false) or a directory (isBatch=true), both atomic, so the
 // message exists in exactly one directory at every instant. Idempotent:
 // if the source is already gone but the target exists, a prior (possibly
 // crashed) pass did this — success.
-bool moveMessage(const std::string& fromDir, const std::string& toDir,
-                 const std::string& id, std::string& err, bool isBatch = false);
+bool moveMessage(const std::string &fromDir, const std::string &toDir,
+                 const std::string &id, std::string &err, bool isBatch = false);
 
 // Fan-out <id> from fromDir into toDir, leaving the source in place: a
 // hardlink for a file, a recursive hardlink-tree for a batch. EEXIST
 // (file) or already-present members (batch) mean a prior pass did it.
-bool linkMessage(const std::string& fromDir, const std::string& toDir,
-                 const std::string& id, std::string& err, bool isBatch = false);
+bool linkMessage(const std::string &fromDir, const std::string &toDir,
+                 const std::string &id, std::string &err, bool isBatch = false);
 
 // Remove message <id> from dir — unlink the file, or recursively remove
 // the batch directory. A missing message is tolerated (idempotent).
-bool removeMessage(const std::string& dir, const std::string& id,
-                   std::string& err, bool isBatch = false);
+bool removeMessage(const std::string &dir, const std::string &id,
+                   std::string &err, bool isBatch = false);
 
 // Whether message <id> in dir, sitting at retry rung retryLevel, is due
 // for a delivery attempt at time now. Rung 0 (todo/) is always due; rung
 // k>=1 is due when now - mtime(message) >= retryBackoff(k) — the mtime of
 // the <id>.dcm file or, for a batch, of the <id>/ directory. A vanished
 // message reads as not-due.
-bool messageDue(const std::string& dir, const std::string& id,
-                int retryLevel, time_t now, bool isBatch = false);
+bool messageDue(const std::string &dir, const std::string &id, int retryLevel,
+                time_t now, bool isBatch = false);
 
 } // namespace dicomq
 

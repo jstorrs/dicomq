@@ -31,53 +31,49 @@ using namespace dicomq;
 static time_t cutoff;
 static int problems = 0;
 
-static void reap(const std::string& path)
-{
+static void reap(const std::string &path) {
   if (unlink(path.c_str()) == 0)
     std::printf("removed %s\n", path.c_str());
-  else if (errno != ENOENT)
-  {
-    std::fprintf(stderr, "dicomq-clean: cannot remove '%s': %s\n",
-                 path.c_str(), strerror(errno));
+  else if (errno != ENOENT) {
+    std::fprintf(stderr, "dicomq-clean: cannot remove '%s': %s\n", path.c_str(),
+                 strerror(errno));
     problems++;
   }
 }
 
-static bool olderThanCutoff(const std::string& path)
-{
+static bool olderThanCutoff(const std::string &path) {
   struct stat st;
   return stat(path.c_str(), &st) == 0 && st.st_mtime < cutoff;
 }
 
-static void cleanTmp(const std::string& dir)
-{
+static void cleanTmp(const std::string &dir) {
   std::error_code ec;
-  for (const auto& entry : fs::directory_iterator(dir, ec))
-  {
+  for (const auto &entry : fs::directory_iterator(dir, ec)) {
     const std::string p = entry.path().string();
     if (entry.is_regular_file(ec) && olderThanCutoff(p))
       reap(p);
   }
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   std::string spoolArg;
   long graceHours = 36;
   int opt;
-  while ((opt = getopt(argc, argv, "s:g:")) != -1)
-  {
-    switch (opt)
-    {
-      case 's': spoolArg = optarg; break;
-      case 'g': graceHours = atol(optarg); break;
-      default:
-        std::fprintf(stderr, "usage: dicomq-clean [-s <spool>] [-g <grace-hours>]\n");
-        return 100;
+  while ((opt = getopt(argc, argv, "s:g:")) != -1) {
+    switch (opt) {
+    case 's':
+      spoolArg = optarg;
+      break;
+    case 'g':
+      graceHours = atol(optarg);
+      break;
+    default:
+      std::fprintf(stderr,
+                   "usage: dicomq-clean [-s <spool>] [-g <grace-hours>]\n");
+      return 100;
     }
   }
-  if (graceHours < 0)
-  {
+  if (graceHours < 0) {
     // a negative grace pushes the cutoff into the future, which would
     // reap freshly written tmp/ and not-yet-committed objects
     std::fprintf(stderr, "dicomq-clean: -g must not be negative\n");

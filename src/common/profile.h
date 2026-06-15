@@ -17,13 +17,12 @@ namespace dicomq {
 // aet/<AET>/accept — what dicomq-recv accepts for a called AET, in
 // preference order. Entries are normalized to UIDs at load time.
 struct AcceptProfile {
-  bool acceptAll = false;  // a non-comment line was "*"
+  bool acceptAll = false; // a non-comment line was "*"
   std::vector<std::string> transferSyntaxes;
 
   // Missing file is not an error: p is the compiled-in default
   // (acceptAll=false, empty list = receiver's built-in preferences).
-  static bool load(const std::string& path, AcceptProfile& p,
-                   std::string& err);
+  static bool load(const std::string &path, AcceptProfile &p, std::string &err);
 };
 
 // dest/<DEST>/propose — what dicomq-remote proposes, plus the transcode
@@ -34,8 +33,8 @@ struct ProposeProfile {
   std::vector<std::string> transferSyntaxes;
   Transcode transcode = Transcode::Never;
 
-  static bool load(const std::string& path, ProposeProfile& p,
-                   std::string& err);
+  static bool load(const std::string &path, ProposeProfile &p,
+                   std::string &err);
 };
 
 // Resolve a transfer syntax profile entry to a UID string: dotted
@@ -43,13 +42,13 @@ struct ProposeProfile {
 // spellings used in DESIGN.md examples) come from a built-in alias
 // table. Returns "" for an unknown name, so config errors surface at
 // load time.
-std::string transferSyntaxUID(const std::string& nameOrUID);
+std::string transferSyntaxUID(const std::string &nameOrUID);
 
 // Whether converting INTO this transfer syntax discards information —
 // the question "transcode: lossless" asks of a target syntax.
 // (Decompressing FROM a lossy syntax adds no further loss and is always
 // allowed.)
-bool isLossyTransferSyntaxUID(const std::string& uid);
+bool isLossyTransferSyntaxUID(const std::string &uid);
 
 // aet/<AET>/deliver — routing instructions, one per line (DESIGN.md
 // "Routing instructions"). A missing file yields the default
@@ -57,11 +56,11 @@ bool isLossyTransferSyntaxUID(const std::string& uid);
 struct DeliverInstruction {
   enum class Kind { Maildir, Forward };
   Kind kind;
-  std::string arg;  // maildir path (possibly relative) or DEST name
+  std::string arg; // maildir path (possibly relative) or DEST name
 };
 
-bool loadDeliver(const std::string& path,
-                 std::vector<DeliverInstruction>& out, std::string& err);
+bool loadDeliver(const std::string &path, std::vector<DeliverInstruction> &out,
+                 std::string &err);
 
 // aet/<AET>/group — opt-in study/series accumulation (DESIGN.md /
 // docs/study-mode.md). Absent ⇒ per-object delivery, the historical
@@ -76,7 +75,7 @@ struct GroupConfig {
   bool enabled() const { return mode != Mode::None; }
 
   // Missing file ⇒ mode None (not an error).
-  static bool load(const std::string& path, GroupConfig& g, std::string& err);
+  static bool load(const std::string &path, GroupConfig &g, std::string &err);
 };
 
 // dest/<DEST>/remote — connection parameters (envelope-format file).
@@ -84,10 +83,9 @@ struct RemoteConfig {
   std::string host;
   int port = 104;
   std::string aet;
-  std::string callingAET;  // empty = compiled-in default
+  std::string callingAET; // empty = compiled-in default
 
-  static bool load(const std::string& path, RemoteConfig& c,
-                   std::string& err);
+  static bool load(const std::string &path, RemoteConfig &c, std::string &err);
 };
 
 } // namespace dicomq

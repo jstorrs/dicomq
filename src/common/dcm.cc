@@ -11,28 +11,26 @@
 
 namespace dicomq {
 
-static std::string metaString(DcmMetaInfo *info, const DcmTagKey& key)
-{
+static std::string metaString(DcmMetaInfo *info, const DcmTagKey &key) {
   OFString s;
   if (info && info->findAndGetOFString(key, s).good())
     return s.c_str();
   return "";
 }
 
-void extractFileMeta(DcmMetaInfo *info, FileMeta& out)
-{
-  out.sopClass       = metaString(info, DCM_MediaStorageSOPClassUID);
-  out.sopInstance    = metaString(info, DCM_MediaStorageSOPInstanceUID);
+void extractFileMeta(DcmMetaInfo *info, FileMeta &out) {
+  out.sopClass = metaString(info, DCM_MediaStorageSOPClassUID);
+  out.sopInstance = metaString(info, DCM_MediaStorageSOPInstanceUID);
   out.transferSyntax = metaString(info, DCM_TransferSyntaxUID);
-  out.sourceAET      = metaString(info, DCM_SourceApplicationEntityTitle);
-  out.receivingAET   = metaString(info, DCM_ReceivingApplicationEntityTitle);
+  out.sourceAET = metaString(info, DCM_SourceApplicationEntityTitle);
+  out.receivingAET = metaString(info, DCM_ReceivingApplicationEntityTitle);
 }
 
-bool readFileMeta(const std::string& path, FileMeta& out)
-{
+bool readFileMeta(const std::string &path, FileMeta &out) {
   DcmFileFormat ff;
   if (ff.loadFile(path.c_str(), EXS_Unknown, EGL_noChange, DCM_MaxReadLength,
-                  ERM_metaOnly).bad())
+                  ERM_metaOnly)
+          .bad())
     return false;
   extractFileMeta(ff.getMetaInfo(), out);
   return true;

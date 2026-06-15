@@ -39,25 +39,22 @@ using namespace dicomq;
 
 static Spool sp;
 
-static int usage()
-{
+static int usage() {
   std::fprintf(stderr,
-      "usage: dicomq-ctl [-s <spool>] hold|release|requeue <id>\n"
-      "       dicomq-ctl [-s <spool>] fail <id> [reason]\n");
+               "usage: dicomq-ctl [-s <spool>] hold|release|requeue <id>\n"
+               "       dicomq-ctl [-s <spool>] fail <id> [reason]\n");
   return 100;
 }
 
 // Flat queues a message can live in, as root-relative names. hold/ is
 // searched separately because it mirrors arbitrary origin subpaths.
-static std::vector<std::string> allQueues()
-{
+static std::vector<std::string> allQueues() {
   std::vector<std::string> dirs;
-  for (const auto& aet : listSubdirs(sp.queueTodo()))
+  for (const auto &aet : listSubdirs(sp.queueTodo()))
     dirs.push_back("queue/todo/" + aet);
-  for (const auto& dest : listSubdirs(sp.routeRoot()))
-  {
+  for (const auto &dest : listSubdirs(sp.routeRoot())) {
     dirs.push_back("route/" + dest + "/todo");
-    for (const auto& lvl : listSubdirs(sp.routeRetryRoot(dest)))
+    for (const auto &lvl : listSubdirs(sp.routeRetryRoot(dest)))
       dirs.push_back("route/" + dest + "/retry/" + lvl);
   }
   dirs.push_back("corrupt");
@@ -69,23 +66,30 @@ static std::vector<std::string> allQueues()
 // isBatch set to whether it is a directory <id>/ (vs a file <id>.dcm). A
 // match under hold/ comes back as e.g. "hold/route/PACS1/todo" — the
 // mirrored origin is part of the path.
-static std::string findMessage(const std::string& id, bool& isBatch)
-{
-  for (const auto& rel : allQueues())
-  {
+static std::string findMessage(const std::string &id, bool &isBatch) {
+  for (const auto &rel : allQueues()) {
     const std::string base = sp.root + "/" + rel;
-    if (pathExists(dcmPath(base, id))) { isBatch = false; return rel; }
-    if (isDir(base + "/" + id))        { isBatch = true;  return rel; }
+    if (pathExists(dcmPath(base, id))) {
+      isBatch = false;
+      return rel;
+    }
+    if (isDir(base + "/" + id)) {
+      isBatch = true;
+      return rel;
+    }
   }
   std::error_code ec;
-  for (const auto& e : fs::recursive_directory_iterator(sp.holdDir(), ec))
-  {
+  for (const auto &e : fs::recursive_directory_iterator(sp.holdDir(), ec)) {
     const std::string rel =
         e.path().parent_path().string().substr(sp.root.size() + 1);
-    if (e.is_regular_file(ec) && e.path().filename() == id + ".dcm")
-      { isBatch = false; return rel; }
-    if (e.is_directory(ec) && e.path().filename() == id)
-      { isBatch = true; return rel; }
+    if (e.is_regular_file(ec) && e.path().filename() == id + ".dcm") {
+      isBatch = false;
+      return rel;
+    }
+    if (e.is_directory(ec) && e.path().filename() == id) {
+      isBatch = true;
+      return rel;
+    }
   }
   return "";
 }
@@ -93,9 +97,8 @@ static std::string findMessage(const std::string& id, bool& isBatch)
 // Meta-bearing path for a message: the file itself, or a batch's first
 // member object (every member carries the same routing AETs). "" if a
 // batch has no readable member.
-static std::string metaPath(const std::string& dir, const std::string& id,
-                            bool isBatch)
-{
+static std::string metaPath(const std::string &dir, const std::string &id,
+                            bool isBatch) {
   if (!isBatch)
     return dcmPath(dir, id);
   const auto objs = listIds(dir + "/" + id);
@@ -104,20 +107,17 @@ static std::string metaPath(const std::string& dir, const std::string& id,
 
 // Called AET from the file-meta header (0002,0018), sanitized for a path.
 // "" if the header cannot be read or carries no receiving AET.
-static std::string readCalledAET(const std::string& path)
-{
+static std::string readCalledAET(const std::string &path) {
   FileMeta m;
   if (!readFileMeta(path, m) || m.receivingAET.empty())
     return "";
   return sanitizeAET(m.receivingAET);
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   std::string spoolArg;
   int opt;
-  while ((opt = getopt(argc, argv, "s:")) != -1)
-  {
+  while ((opt = getopt(argc, argv, "s:")) != -1) {
     if (opt == 's')
       spoolArg = optarg;
     else
@@ -133,24 +133,21 @@ int main(int argc, char **argv)
 
   bool isBatch = false;
   const std::string from = findMessage(id, isBatch);
-  if (from.empty())
-  {
+  if (from.empty()) {
     std::fprintf(stderr, "dicomq-ctl: no message '%s' in any queue\n",
                  id.c_str());
     return 111;
   }
   const std::string fromDir = sp.root + "/" + from;
 
-  if (verb == "hold")
-  {
+  if (verb == "hold") {
     if (from.rfind("hold", 0) == 0)
-      return 0;  // already held: idempotent
+      return 0; // already held: idempotent
     // mirror the origin path under hold/ so release can recover it
     const std::string toDir = sp.holdDir() + "/" + from;
     std::error_code ec;
     fs::create_directories(toDir, ec);
-    if (!moveMessage(fromDir, toDir, id, err, isBatch))
-    {
+    if (!moveMessage(fromDir, toDir, id, err, isBatch)) {
       std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }
@@ -158,19 +155,16 @@ int main(int argc, char **argv)
     return 0;
   }
 
-  if (verb == "release")
-  {
-    if (from.rfind("hold/", 0) != 0)
-    {
+  if (verb == "release") {
+    if (from.rfind("hold/", 0) != 0) {
       std::fprintf(stderr, "dicomq-ctl: '%s' is not in hold/\n", id.c_str());
       return 111;
     }
-    const std::string origin = from.substr(5);  // strip "hold/"
+    const std::string origin = from.substr(5); // strip "hold/"
     const std::string toDir = sp.root + "/" + origin;
     std::error_code ec;
     fs::create_directories(toDir, ec);
-    if (!moveMessage(fromDir, toDir, id, err, isBatch))
-    {
+    if (!moveMessage(fromDir, toDir, id, err, isBatch)) {
       std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }
@@ -178,22 +172,19 @@ int main(int argc, char **argv)
     return 0;
   }
 
-  if (verb == "requeue")
-  {
+  if (verb == "requeue") {
     const std::string mp = metaPath(fromDir, id, isBatch);
     const std::string aet = mp.empty() ? "" : readCalledAET(mp);
-    if (aet.empty())
-    {
-      std::fprintf(stderr,
-          "dicomq-ctl: cannot read a called AET from '%s'\n", id.c_str());
+    if (aet.empty()) {
+      std::fprintf(stderr, "dicomq-ctl: cannot read a called AET from '%s'\n",
+                   id.c_str());
       return 111;
     }
     const std::string toDir = sp.queueTodoAET(aet);
     if (from == "queue/todo/" + aet)
-      return 0;  // idempotent
-    if (!mkdirIfMissing(toDir, err)
-        || !moveMessage(fromDir, toDir, id, err, isBatch))
-    {
+      return 0; // idempotent
+    if (!mkdirIfMissing(toDir, err) ||
+        !moveMessage(fromDir, toDir, id, err, isBatch)) {
       std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }
@@ -202,15 +193,13 @@ int main(int argc, char **argv)
     return 0;
   }
 
-  if (verb == "fail")
-  {
+  if (verb == "fail") {
     if (from == "failed")
-      return 0;  // idempotent
+      return 0; // idempotent
     std::string reason = "failed by operator";
     if (argc - optind > 2)
       reason = argv[optind + 2];
-    if (!moveMessage(fromDir, sp.failedDir(), id, err, isBatch))
-    {
+    if (!moveMessage(fromDir, sp.failedDir(), id, err, isBatch)) {
       std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }

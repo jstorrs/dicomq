@@ -35,25 +35,28 @@
 
 using namespace dicomq;
 
-static int usage()
-{
-  std::fprintf(stderr,
-      "usage: dicomq-inject [-s <spool>] -c <called-aet> [-a <calling-aet>] <file.dcm>...\n");
+static int usage() {
+  std::fprintf(stderr, "usage: dicomq-inject [-s <spool>] -c <called-aet> [-a "
+                       "<calling-aet>] <file.dcm>...\n");
   return 100;
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   std::string spoolArg, calledAET, callingAET = "LOCAL";
   int opt;
-  while ((opt = getopt(argc, argv, "s:c:a:")) != -1)
-  {
-    switch (opt)
-    {
-      case 's': spoolArg = optarg; break;
-      case 'c': calledAET = optarg; break;
-      case 'a': callingAET = optarg; break;
-      default: return usage();
+  while ((opt = getopt(argc, argv, "s:c:a:")) != -1) {
+    switch (opt) {
+    case 's':
+      spoolArg = optarg;
+      break;
+    case 'c':
+      calledAET = optarg;
+      break;
+    case 'a':
+      callingAET = optarg;
+      break;
+    default:
+      return usage();
     }
   }
   if (calledAET.empty() || optind >= argc)
@@ -62,14 +65,12 @@ int main(int argc, char **argv)
   const Spool sp(spoolArg);
   std::string err;
 
-  for (int i = optind; i < argc; i++)
-  {
+  for (int i = optind; i < argc; i++) {
     const char *file = argv[i];
 
     DcmFileFormat ff;
     OFCondition cond = ff.loadFile(file);
-    if (cond.bad())
-    {
+    if (cond.bad()) {
       std::fprintf(stderr, "dicomq-inject: cannot read '%s': %s\n", file,
                    cond.text());
       return 100;
@@ -77,9 +78,9 @@ int main(int argc, char **argv)
     DcmMetaInfo *meta = ff.getMetaInfo();
     FileMeta fm;
     extractFileMeta(meta, fm);
-    if (!fm.hasRouting())
-    {
-      std::fprintf(stderr,
+    if (!fm.hasRouting()) {
+      std::fprintf(
+          stderr,
           "dicomq-inject: '%s' has no usable file meta header (not Part 10?)\n",
           file);
       return 100;
@@ -102,12 +103,11 @@ int main(int argc, char **argv)
     // the same commit protocol as dicomq-recv: save into tmp, then one
     // atomic rename into queue/todo/<called-aet>/ commits the message.
     // EWM_fileformat preserves the loaded preamble (dual TIFF/DICOM).
-    const OFCondition saved = ff.saveFile(tmpDcm.c_str(),
-        ff.getDataset()->getOriginalXfer(), EET_ExplicitLength, EGL_recalcGL,
-        EPD_withoutPadding, 0, 0, EWM_fileformat);
-    if (saved.bad() || !mkdirIfMissing(aetDir, err)
-        || !commitFile(tmpDcm, dcmPath(aetDir, id), err))
-    {
+    const OFCondition saved = ff.saveFile(
+        tmpDcm.c_str(), ff.getDataset()->getOriginalXfer(), EET_ExplicitLength,
+        EGL_recalcGL, EPD_withoutPadding, 0, 0, EWM_fileformat);
+    if (saved.bad() || !mkdirIfMissing(aetDir, err) ||
+        !commitFile(tmpDcm, dcmPath(aetDir, id), err)) {
       std::fprintf(stderr, "dicomq-inject: %s\n",
                    saved.bad() ? saved.text() : err.c_str());
       unlink(tmpDcm.c_str());

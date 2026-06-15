@@ -98,14 +98,12 @@ struct WorkItem {
   std::vector<Object> objects;
 };
 
-static void logmsg(const std::string& m)
-{
+static void logmsg(const std::string &m) {
   std::fprintf(stderr, "dicomq-remote: %s: %s\n", destName.c_str(), m.c_str());
 }
 
 // destination-level backoff (dead-site cache): one file, not N messages
-static void recordConnectionFailure(const std::string& reason)
-{
+static void recordConnectionFailure(const std::string &reason) {
   std::string err;
   long failures = 0;
   KeyValueFile old;
@@ -124,8 +122,8 @@ static void recordConnectionFailure(const std::string& reason)
   status.add("next-attempt-after", isoTime(time(nullptr) + delay));
   if (!writeKeyValueCommitted(sp, status, sp.routeStatus(destName), err))
     logmsg("cannot write status: " + err);
-  logmsg("connection failed (" + reason + "); next attempt in "
-         + std::to_string(delay) + "s");
+  logmsg("connection failed (" + reason + "); next attempt in " +
+         std::to_string(delay) + "s");
 }
 
 // a destination rejected this message: climb one retry rung, or fail it
@@ -136,15 +134,13 @@ static void recordConnectionFailure(const std::string& reason)
 // clock reads — is private, even though the same .dcm may be hardlinked
 // into other destinations' queues. The terminal move to failed/ can be a
 // plain rename: failed/ is never scheduled.
-static void demote(const WorkItem& w, const std::string& reason)
-{
+static void demote(const WorkItem &w, const std::string &reason) {
   std::string err;
   const int next = w.level + 1;
   const std::string nextDir = sp.routeRetry(destName, next);
-  if (!isDir(nextDir))
-  {
-    logmsg("failing " + w.id + ": " + reason + " (no retry/"
-           + std::to_string(next) + " rung)");
+  if (!isDir(nextDir)) {
+    logmsg("failing " + w.id + ": " + reason + " (no retry/" +
+           std::to_string(next) + " rung)");
     if (!moveMessage(w.dir, sp.failedDir(), w.id, err, w.isBatch))
       logmsg("cannot fail " + w.id + ": " + err);
     return;
@@ -154,21 +150,16 @@ static void demote(const WorkItem& w, const std::string& reason)
   // a single object copies to a new inode; a batch hardlink-trees into a
   // fresh directory whose own mtime is the clock (members share inodes),
   // because the same message may be hardlinked into other destinations.
-  if (w.isBatch)
-  {
-    if (!linkBatchTree(w.dir, nextDir, w.id, err))
-    {
+  if (w.isBatch) {
+    if (!linkBatchTree(w.dir, nextDir, w.id, err)) {
       logmsg("cannot demote " + w.id + ": " + err);
       return;
     }
-  }
-  else
-  {
-    const std::string tmp = sp.queueTmp() + "/" + w.id + ".retry"
-                            + std::to_string(getpid());
-    if (!copyFile(dcmPath(w.dir, w.id), tmp, err)
-        || !commitFile(tmp, dcmPath(nextDir, w.id), err))
-    {
+  } else {
+    const std::string tmp =
+        sp.queueTmp() + "/" + w.id + ".retry" + std::to_string(getpid());
+    if (!copyFile(dcmPath(w.dir, w.id), tmp, err) ||
+        !commitFile(tmp, dcmPath(nextDir, w.id), err)) {
       logmsg("cannot demote " + w.id + ": " + err);
       unlink(tmp.c_str());
       return;
@@ -178,22 +169,20 @@ static void demote(const WorkItem& w, const std::string& reason)
     logmsg("demoted " + w.id + " but cannot remove source: " + err);
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   std::string spoolArg;
   int opt;
-  while ((opt = getopt(argc, argv, "s:")) != -1)
-  {
-    switch (opt)
-    {
-      case 's': spoolArg = optarg; break;
-      default:
-        std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
-        return 100;
+  while ((opt = getopt(argc, argv, "s:")) != -1) {
+    switch (opt) {
+    case 's':
+      spoolArg = optarg;
+      break;
+    default:
+      std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
+      return 100;
     }
   }
-  if (optind + 1 != argc)
-  {
+  if (optind + 1 != argc) {
     std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
     return 100;
   }
@@ -202,14 +191,12 @@ int main(int argc, char **argv)
 
   std::string err;
   RemoteConfig cfg;
-  if (!RemoteConfig::load(sp.destDir(destName) + "/remote", cfg, err))
-  {
+  if (!RemoteConfig::load(sp.destDir(destName) + "/remote", cfg, err)) {
     logmsg(err);
     return 100;
   }
   ProposeProfile profile;
-  if (!ProposeProfile::load(sp.destDir(destName) + "/propose", profile, err))
-  {
+  if (!ProposeProfile::load(sp.destDir(destName) + "/propose", profile, err)) {
     logmsg(err);
     return 100;
   }
@@ -223,7 +210,7 @@ int main(int argc, char **argv)
   std::set<std::string> sopClasses;
 
   // read the routing fields one object needs from its file-meta header
-  auto readObjectMeta = [](const std::string& path, Object& obj) -> bool {
+  auto readObjectMeta = [](const std::string &path, Object &obj) -> bool {
     FileMeta m;
     if (!readFileMeta(path, m) || !m.hasRouting())
       return false;
@@ -231,55 +218,51 @@ int main(int argc, char **argv)
     return true;
   };
 
-  auto gather = [&](const std::string& dir, int level) {
-    for (const auto& msg : listMessages(dir))
-    {
+  auto gather = [&](const std::string &dir, int level) {
+    for (const auto &msg : listMessages(dir)) {
       if (!messageDue(dir, msg.id, level, now, msg.isBatch))
-        continue;  // attempted and still backing off
+        continue; // attempted and still backing off
       WorkItem item;
       item.dir = dir;
       item.level = level;
       item.id = msg.id;
       item.isBatch = msg.isBatch;
       bool ok = true;
-      if (msg.isBatch)
-      {
+      if (msg.isBatch) {
         // a batch is a directory of <objid>.dcm; read every member
         const std::string bdir = messagePath(dir, msg.id, true);
-        for (const auto& objid : listIds(bdir))
-        {
+        for (const auto &objid : listIds(bdir)) {
           Object obj;
-          if (!readObjectMeta(dcmPath(bdir, objid), obj)) { ok = false; break; }
+          if (!readObjectMeta(dcmPath(bdir, objid), obj)) {
+            ok = false;
+            break;
+          }
           item.objects.push_back(obj);
         }
-      }
-      else
-      {
+      } else {
         Object obj;
         if (readObjectMeta(dcmPath(dir, msg.id), obj))
           item.objects.push_back(obj);
         else
           ok = false;
       }
-      if (ok && item.objects.empty())
-      {
+      if (ok && item.objects.empty()) {
         // a sealed batch should never be empty; if it is, drop it quietly
         removeMessage(dir, msg.id, err, msg.isBatch);
         continue;
       }
-      if (!ok)
-      {
+      if (!ok) {
         logmsg("quarantining " + msg.id + ": cannot read file meta");
         if (!moveMessage(dir, sp.corruptDir(), msg.id, err, msg.isBatch))
           logmsg("cannot quarantine " + msg.id + ": " + err);
         continue;
       }
-      for (const auto& o : item.objects)
+      for (const auto &o : item.objects)
         sopClasses.insert(o.sopClass);
       work.push_back(std::move(item));
     }
   };
-  for (const auto& d : routeQueueDirs(sp, destName))
+  for (const auto &d : routeQueueDirs(sp, destName))
     gather(d.first, d.second);
   if (work.empty())
     return 0;
@@ -296,8 +279,7 @@ int main(int argc, char **argv)
   OFStandard::initializeNetwork();
   T_ASC_Network *net = nullptr;
   OFCondition cond = ASC_initializeNetwork(NET_REQUESTOR, 0, 30, &net);
-  if (cond.bad())
-  {
+  if (cond.bad()) {
     logmsg(std::string("cannot initialize network: ") + cond.text());
     return 111;
   }
@@ -305,30 +287,30 @@ int main(int argc, char **argv)
   // dest/<DEST>/tls/ exists => DICOM TLS to this destination
   const std::string tlsDir = sp.destDir(destName) + "/tls";
   const bool useTLS = isDir(tlsDir);
-  if (useTLS)
-  {
+  if (useTLS) {
     DcmTLSTransportLayer::initializeOpenSSL();
     DcmTLSTransportLayer *layer =
         new DcmTLSTransportLayer(NET_REQUESTOR, nullptr, OFFalse);
-    bool ok = layer->setTLSProfile(TSP_Profile_BCP195).good()
-              && layer->activateCipherSuites().good();
+    bool ok = layer->setTLSProfile(TSP_Profile_BCP195).good() &&
+              layer->activateCipherSuites().good();
     const std::string ca = tlsDir + "/ca.pem";
-    if (ok && pathExists(ca))
-    {
-      ok = layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).good();
+    if (ok && pathExists(ca)) {
+      ok =
+          layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).good();
       layer->setCertificateVerification(DCV_requireCertificate);
-    }
-    else
+    } else
       layer->setCertificateVerification(DCV_ignoreCertificate);
     const std::string key = tlsDir + "/key.pem", cert = tlsDir + "/cert.pem";
     if (ok && pathExists(key))
-      ok = layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).good()
-           && layer->setCertificateFile(cert.c_str(), DCF_Filetype_PEM, TSP_Profile_BCP195).good()
-           && layer->checkPrivateKeyMatchesCertificate();
-    if (!ok || ASC_setTransportLayer(net, layer, 1).bad())
-    {
+      ok = layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).good() &&
+           layer
+               ->setCertificateFile(cert.c_str(), DCF_Filetype_PEM,
+                                    TSP_Profile_BCP195)
+               .good() &&
+           layer->checkPrivateKeyMatchesCertificate();
+    if (!ok || ASC_setTransportLayer(net, layer, 1).bad()) {
       logmsg("TLS setup failed for '" + tlsDir + "'");
-      return 100;  // config problem, not destination weather
+      return 100; // config problem, not destination weather
     }
   }
 
@@ -336,8 +318,8 @@ int main(int argc, char **argv)
   ASC_createAssociationParameters(&params, ASC_DEFAULTMAXPDU,
                                   30 /* TCP connect timeout, seconds */);
   ASC_setAPTitles(params, callingAET.c_str(), cfg.aet.c_str(), nullptr);
-  char localHost[256] = {0};  // POSIX leaves the result unterminated on
-  gethostname(localHost, sizeof(localHost) - 1);  // truncation; pre-NUL it
+  char localHost[256] = {0}; // POSIX leaves the result unterminated on
+  gethostname(localHost, sizeof(localHost) - 1); // truncation; pre-NUL it
   const std::string peer = cfg.host + ":" + std::to_string(cfg.port);
   ASC_setPresentationAddresses(params, localHost, peer.c_str());
   if (useTLS)
@@ -346,13 +328,11 @@ int main(int argc, char **argv)
   // one context per (SOP class, transfer syntax): precise control over
   // what an accepted context implies
   std::vector<std::string> proposeTS = profile.transferSyntaxes;
-  if (proposeTS.empty())
-  {
-    for (const auto& w : work)
-      for (const auto& o : w.objects)
-      {
+  if (proposeTS.empty()) {
+    for (const auto &w : work)
+      for (const auto &o : w.objects) {
         bool seen = false;
-        for (const auto& p : proposeTS)
+        for (const auto &p : proposeTS)
           seen = seen || p == o.xferUID;
         if (!seen && !o.xferUID.empty())
           proposeTS.push_back(o.xferUID);
@@ -367,15 +347,13 @@ int main(int argc, char **argv)
   // remember which classes we actually proposed.
   std::set<std::string> proposedSops;
   T_ASC_PresentationContextID pid = 1;
-  for (const auto& sop : sopClasses)
-  {
+  for (const auto &sop : sopClasses) {
     if (pid > 253)
-      break;  // 128-context PDU limit reached; remaining classes deferred
-    for (const auto& ts : proposeTS)
-    {
+      break; // 128-context PDU limit reached; remaining classes deferred
+    for (const auto &ts : proposeTS) {
       if (pid > 253)
         break;
-      const char *tsArr[] = { ts.c_str() };
+      const char *tsArr[] = {ts.c_str()};
       ASC_addPresentationContext(params, pid, sop.c_str(), tsArr, 1);
       proposedSops.insert(sop);
       pid += 2;
@@ -384,12 +362,10 @@ int main(int argc, char **argv)
 
   T_ASC_Association *assoc = nullptr;
   cond = ASC_requestAssociation(net, params, &assoc);
-  if (cond.bad() || ASC_countAcceptedPresentationContexts(params) == 0)
-  {
+  if (cond.bad() || ASC_countAcceptedPresentationContexts(params) == 0) {
     recordConnectionFailure(cond.bad() ? cond.text()
-                            : "no presentation context accepted");
-    if (assoc)
-    {
+                                       : "no presentation context accepted");
+    if (assoc) {
       ASC_abortAssociation(assoc);
       ASC_destroyAssociation(&assoc);
     }
@@ -398,8 +374,7 @@ int main(int argc, char **argv)
   }
 
   bool connectionBroke = false;
-  for (const auto& item : work)
-  {
+  for (const auto &item : work) {
     // A message delivers all-or-nothing: every object goes over this one
     // association. A single object that is rejected or impossible to send
     // demotes the whole message; an object whose SOP class we never got to
@@ -409,12 +384,10 @@ int main(int argc, char **argv)
     bool itemFailed = false, deferItem = false, quarantined = false;
     std::string failReason;
 
-    for (const auto& obj : item.objects)
-    {
+    for (const auto &obj : item.objects) {
       DcmFileFormat ff;
       cond = ff.loadFile(obj.path.c_str());
-      if (cond.bad())
-      {
+      if (cond.bad()) {
         logmsg("quarantining " + item.id + ": " + cond.text());
         if (!moveMessage(item.dir, sp.corruptDir(), item.id, err, item.isBatch))
           logmsg("cannot quarantine " + item.id + ": " + err);
@@ -432,22 +405,20 @@ int main(int argc, char **argv)
           ASC_findAcceptedPresentationContextID(assoc, obj.sopClass.c_str(),
                                                 objXfer.getXferID());
       if (presID == 0)
-        presID = ASC_findAcceptedPresentationContextID(assoc,
-                                                       obj.sopClass.c_str());
-      if (presID == 0)
-      {
+        presID =
+            ASC_findAcceptedPresentationContextID(assoc, obj.sopClass.c_str());
+      if (presID == 0) {
         // No usable context. Distinguish our own context-budget limit (we
         // never proposed this class — defer so a later batch carries it; a
         // deferral must not consume a retry rung) from a destination that
         // refused a class we did propose (a real, permanent rejection).
-        if (proposedSops.count(obj.sopClass) == 0)
-        {
-          logmsg("deferred " + item.id + ": presentation-context budget "
-                 "exhausted, " + obj.sopClass + " not proposed this batch");
+        if (proposedSops.count(obj.sopClass) == 0) {
+          logmsg("deferred " + item.id +
+                 ": presentation-context budget "
+                 "exhausted, " +
+                 obj.sopClass + " not proposed this batch");
           deferItem = true;
-        }
-        else
-        {
+        } else {
           itemFailed = true;
           failReason = "no presentation context accepted for " + obj.sopClass;
         }
@@ -455,34 +426,30 @@ int main(int argc, char **argv)
       }
       T_ASC_PresentationContext pc;
       ASC_findAcceptedPresentationContext(assoc->params, presID, &pc);
-      if (strcmp(pc.acceptedTransferSyntax, objXfer.getXferID()) != 0)
-      {
+      if (strcmp(pc.acceptedTransferSyntax, objXfer.getXferID()) != 0) {
         // stored syntax not accepted: transcode or fail, per policy
-        if (profile.transcode == ProposeProfile::Transcode::Never)
-        {
+        if (profile.transcode == ProposeProfile::Transcode::Never) {
           itemFailed = true;
-          failReason = std::string("stored syntax ") + objXfer.getXferID()
-                       + " not accepted and transcode is 'never'";
+          failReason = std::string("stored syntax ") + objXfer.getXferID() +
+                       " not accepted and transcode is 'never'";
           break;
         }
-        if (profile.transcode == ProposeProfile::Transcode::Lossless
-            && isLossyTransferSyntaxUID(pc.acceptedTransferSyntax))
-        {
+        if (profile.transcode == ProposeProfile::Transcode::Lossless &&
+            isLossyTransferSyntaxUID(pc.acceptedTransferSyntax)) {
           itemFailed = true;
-          failReason = std::string("accepted syntax ")
-                       + pc.acceptedTransferSyntax
-                       + " is lossy and transcode is 'lossless'";
+          failReason = std::string("accepted syntax ") +
+                       pc.acceptedTransferSyntax +
+                       " is lossy and transcode is 'lossless'";
           break;
         }
         const DcmXfer target(pc.acceptedTransferSyntax);
-        const OFCondition xc = dataset->chooseRepresentation(target.getXfer(),
-                                                             nullptr);
-        if (xc.bad() || !dataset->canWriteXfer(target.getXfer()))
-        {
+        const OFCondition xc =
+            dataset->chooseRepresentation(target.getXfer(), nullptr);
+        if (xc.bad() || !dataset->canWriteXfer(target.getXfer())) {
           itemFailed = true;
-          failReason = std::string("cannot transcode ") + objXfer.getXferID()
-                       + " -> " + target.getXferID()
-                       + (xc.bad() ? std::string(": ") + xc.text() : "");
+          failReason = std::string("cannot transcode ") + objXfer.getXferID() +
+                       " -> " + target.getXferID() +
+                       (xc.bad() ? std::string(": ") + xc.text() : "");
           break;
         }
       }
@@ -504,16 +471,15 @@ int main(int argc, char **argv)
                              nullptr, DIMSE_BLOCKING, 0, &rsp, &statusDetail);
       delete statusDetail;
 
-      if (cond.bad())
-      {
+      if (cond.bad()) {
         // mid-association breakage is destination state; messages stay
         // where they are so nothing is double-penalized
         recordConnectionFailure(cond.text());
         connectionBroke = true;
         break;
       }
-      if (rsp.DimseStatus != STATUS_Success
-          && (rsp.DimseStatus & 0xf000) != 0xB000)  // warnings are delivered
+      if (rsp.DimseStatus != STATUS_Success &&
+          (rsp.DimseStatus & 0xf000) != 0xB000) // warnings are delivered
       {
         char status[16];
         snprintf(status, sizeof(status), "0x%04x", rsp.DimseStatus);
@@ -527,26 +493,25 @@ int main(int argc, char **argv)
     if (connectionBroke)
       break;
     if (quarantined)
-      continue;  // the whole message was moved to corrupt/
+      continue; // the whole message was moved to corrupt/
     if (deferItem)
-      continue;  // left in place for a later batch
-    if (itemFailed)
-    {
+      continue; // left in place for a later batch
+    if (itemFailed) {
       demote(item, failReason);
       continue;
     }
     if (!removeMessage(item.dir, item.id, err, item.isBatch))
       logmsg("delivered " + item.id + " but cannot dequeue: " + err);
     else
-      logmsg("delivered " + item.id
-             + (item.isBatch ? " (" + std::to_string(item.objects.size())
-                                      + " objects)" : ""));
+      logmsg("delivered " + item.id +
+             (item.isBatch
+                  ? " (" + std::to_string(item.objects.size()) + " objects)"
+                  : ""));
   }
 
-  if (!connectionBroke)
-  {
+  if (!connectionBroke) {
     ASC_releaseAssociation(assoc);
-    unlink(sp.routeStatus(destName).c_str());  // the site is alive
+    unlink(sp.routeStatus(destName).c_str()); // the site is alive
   }
   ASC_destroyAssociation(&assoc);
   ASC_dropNetwork(&net);

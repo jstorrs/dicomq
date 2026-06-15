@@ -38,8 +38,8 @@
 #include "dcmtk/dcmdata/dcmetinf.h"
 #include "dcmtk/dcmdata/dcuid.h"
 #include "dcmtk/dcmdata/dcxfer.h"
-#include "dcmtk/dcmnet/diutil.h"
 #include "dcmtk/dcmnet/dimse.h"
+#include "dcmtk/dcmnet/diutil.h"
 #include "dcmtk/dcmtls/tlslayer.h"
 
 #include <cstdio>
@@ -61,8 +61,7 @@ using namespace dicomq;
 static Spool sp;
 static long long watermarkBytes = 1024LL * 1024 * 1024;
 
-static void logmsg(const std::string& m)
-{
+static void logmsg(const std::string &m) {
   std::fprintf(stderr, "dicomq-recv: %s\n", m.c_str());
 }
 
@@ -72,33 +71,31 @@ static void logmsg(const std::string& m)
 struct StoreContext {
   DcmFileFormat *ff;
   std::string callingAET, calledAET, peer;
-  GroupConfig group;  // study/series accumulation for this called AET
+  GroupConfig group; // study/series accumulation for this called AET
 };
 
 static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
                           T_DIMSE_C_StoreRQ *req, char * /*imageFileName*/,
                           DcmDataset **imageDataSet, T_DIMSE_C_StoreRSP *rsp,
-                          DcmDataset **statusDetail)
-{
+                          DcmDataset **statusDetail) {
   if (progress->state != DIMSE_StoreEnd)
     return;
   *statusDetail = nullptr;
 
   StoreContext *ctx = static_cast<StoreContext *>(cbData);
   if (rsp->DimseStatus != STATUS_Success || !imageDataSet || !*imageDataSet)
-    return;  // provider already failing; enqueue nothing
+    return; // provider already failing; enqueue nothing
 
   // the dataset must actually be what the request claims it is
   DIC_UI sopClass, sopInstance;
   if (!DU_findSOPClassAndInstanceInDataSet(*imageDataSet, sopClass,
-          sizeof(sopClass), sopInstance, sizeof(sopInstance), OFFalse))
-  {
+                                           sizeof(sopClass), sopInstance,
+                                           sizeof(sopInstance), OFFalse)) {
     rsp->DimseStatus = STATUS_STORE_Error_CannotUnderstand;
     return;
   }
-  if (strcmp(sopClass, req->AffectedSOPClassUID) != 0
-      || strcmp(sopInstance, req->AffectedSOPInstanceUID) != 0)
-  {
+  if (strcmp(sopClass, req->AffectedSOPClassUID) != 0 ||
+      strcmp(sopInstance, req->AffectedSOPInstanceUID) != 0) {
     rsp->DimseStatus = STATUS_STORE_Error_DataSetDoesNotMatchSOPClass;
     return;
   }
@@ -119,18 +116,17 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
   // mandatory in this mode — an object without it cannot be routed, so it
   // is refused (like a SOP-class mismatch above), not silently misfiled.
   std::string groupUID;
-  if (ctx->group.enabled())
-  {
+  if (ctx->group.enabled()) {
     const DcmTagKey key = ctx->group.mode == GroupConfig::Mode::Series
-        ? DCM_SeriesInstanceUID : DCM_StudyInstanceUID;
+                              ? DCM_SeriesInstanceUID
+                              : DCM_StudyInstanceUID;
     OFString u;
-    if ((*imageDataSet)->findAndGetOFString(key, u).bad() || u.empty())
-    {
+    if ((*imageDataSet)->findAndGetOFString(key, u).bad() || u.empty()) {
       logmsg("refusing an object with no grouping UID for " + ctx->calledAET);
       rsp->DimseStatus = STATUS_STORE_Error_CannotUnderstand;
       return;
     }
-    groupUID = sanitizeAET(u.c_str());  // UIDs are digits and dots: safe path
+    groupUID = sanitizeAET(u.c_str()); // UIDs are digits and dots: safe path
   }
 
   const E_TransferSyntax xfer = (*imageDataSet)->getOriginalXfer();
@@ -138,11 +134,10 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
   const std::string tmpDcm = dcmPath(sp.queueTmp(), id);
   std::string err;
 
-  OFCondition cond = ctx->ff->saveFile(tmpDcm.c_str(), xfer,
-      EET_ExplicitLength, EGL_recalcGL, EPD_withoutPadding, 0, 0,
-      EWM_fileformat);
-  if (cond.bad())
-  {
+  OFCondition cond =
+      ctx->ff->saveFile(tmpDcm.c_str(), xfer, EET_ExplicitLength, EGL_recalcGL,
+                        EPD_withoutPadding, 0, 0, EWM_fileformat);
+  if (cond.bad()) {
     logmsg("cannot write " + tmpDcm + ": " + cond.text());
     unlink(tmpDcm.c_str());
     rsp->DimseStatus = STATUS_STORE_Refused_OutOfResources;
@@ -155,40 +150,35 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
   // routing reads later.
   bool committed = false;
   std::string destDir;
-  if (groupUID.empty())
-  {
+  if (groupUID.empty()) {
     // per-object: straight into the called AET's inbound queue
     destDir = sp.queueTodoAET(aet);
-    committed = mkdirIfMissing(destDir, err)
-                && commitFile(tmpDcm, dcmPath(destDir, id), err);
-  }
-  else
-  {
+    committed = mkdirIfMissing(destDir, err) &&
+                commitFile(tmpDcm, dcmPath(destDir, id), err);
+  } else {
     // accumulate: if dicomq-send sealed (renamed away) the accumulation
     // directory between our mkdir and our rename, the rename fails — so
     // recreate the directory and retry. The straggler simply starts the
     // next batch; the bound stops a pathological loop.
-    for (int attempt = 0; attempt < 4 && !committed; attempt++)
-    {
+    for (int attempt = 0; attempt < 4 && !committed; attempt++) {
       destDir = sp.accumGroup(aet, groupUID);
-      if (!mkdirIfMissing(sp.accumRoot(), err)
-          || !mkdirIfMissing(sp.accumAET(aet), err)
-          || !mkdirIfMissing(destDir, err))
+      if (!mkdirIfMissing(sp.accumRoot(), err) ||
+          !mkdirIfMissing(sp.accumAET(aet), err) ||
+          !mkdirIfMissing(destDir, err))
         break;
       committed = commitFile(tmpDcm, dcmPath(destDir, id), err);
     }
   }
-  if (!committed)
-  {
+  if (!committed) {
     logmsg("cannot enqueue " + id + ": " + err);
     unlink(tmpDcm.c_str());
     removeMessage(destDir, id, err);
     rsp->DimseStatus = STATUS_STORE_Refused_OutOfResources;
     return;
   }
-  logmsg("queued " + id + (groupUID.empty() ? "" : " (" + groupUID + ")")
-         + " from " + ctx->callingAET + " (" + ctx->peer + ") for "
-         + ctx->calledAET);
+  logmsg("queued " + id + (groupUID.empty() ? "" : " (" + groupUID + ")") +
+         " from " + ctx->callingAET + " (" + ctx->peer + ") for " +
+         ctx->calledAET);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,20 +186,17 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
 static void rejectAssociation(T_ASC_Association *assoc,
                               T_ASC_RejectParametersResult result,
                               T_ASC_RejectParametersSource source,
-                              T_ASC_RejectParametersReason reason)
-{
-  T_ASC_RejectParameters rej = { result, source, reason };
+                              T_ASC_RejectParametersReason reason) {
+  T_ASC_RejectParameters rej = {result, source, reason};
   ASC_rejectAssociation(assoc, &rej);
 }
 
-static int handleAssociation(T_ASC_Association *assoc)
-{
+static int handleAssociation(T_ASC_Association *assoc) {
   // free-space watermark: refuse before anything is received
   const long long freeNow = freeBytes(sp.root);
-  if (freeNow >= 0 && freeNow < watermarkBytes)
-  {
-    logmsg("refusing association: " + std::to_string(freeNow)
-           + " bytes free is below the watermark");
+  if (freeNow >= 0 && freeNow < watermarkBytes) {
+    logmsg("refusing association: " + std::to_string(freeNow) +
+           " bytes free is below the watermark");
     rejectAssociation(assoc, ASC_RESULT_REJECTEDTRANSIENT,
                       ASC_SOURCE_SERVICEPROVIDER_PRESENTATION_RELATED,
                       ASC_REASON_SP_PRES_TEMPORARYCONGESTION);
@@ -218,8 +205,8 @@ static int handleAssociation(T_ASC_Association *assoc)
 
   DIC_AE callingTitle, calledTitle;
   if (ASC_getAPTitles(assoc->params, callingTitle, sizeof(callingTitle),
-                      calledTitle, sizeof(calledTitle), nullptr, 0).bad())
-  {
+                      calledTitle, sizeof(calledTitle), nullptr, 0)
+          .bad()) {
     rejectAssociation(assoc, ASC_RESULT_REJECTEDPERMANENT,
                       ASC_SOURCE_SERVICEUSER, ASC_REASON_SU_NOREASON);
     return 0;
@@ -227,10 +214,9 @@ static int handleAssociation(T_ASC_Association *assoc)
   const std::string called = sanitizeAET(calledTitle);
 
   // unknown recipient: rejected at "RCPT TO", not bounced later
-  if (isReservedName(called) || !isDir(sp.aetDir(called)))
-  {
-    logmsg("rejecting association: unknown called AET '"
-           + std::string(calledTitle) + "'");
+  if (isReservedName(called) || !isDir(sp.aetDir(called))) {
+    logmsg("rejecting association: unknown called AET '" +
+           std::string(calledTitle) + "'");
     rejectAssociation(assoc, ASC_RESULT_REJECTEDPERMANENT,
                       ASC_SOURCE_SERVICEUSER,
                       ASC_REASON_SU_CALLEDAETITLENOTRECOGNIZED);
@@ -239,8 +225,7 @@ static int handleAssociation(T_ASC_Association *assoc)
 
   AcceptProfile profile;
   std::string err;
-  if (!AcceptProfile::load(sp.aetDir(called) + "/accept", profile, err))
-  {
+  if (!AcceptProfile::load(sp.aetDir(called) + "/accept", profile, err)) {
     logmsg("rejecting association: " + err);
     rejectAssociation(assoc, ASC_RESULT_REJECTEDTRANSIENT,
                       ASC_SOURCE_SERVICEPROVIDER_PRESENTATION_RELATED,
@@ -249,8 +234,7 @@ static int handleAssociation(T_ASC_Association *assoc)
   }
 
   GroupConfig group;
-  if (!GroupConfig::load(sp.aetDir(called) + "/group", group, err))
-  {
+  if (!GroupConfig::load(sp.aetDir(called) + "/group", group, err)) {
     logmsg("rejecting association: " + err);
     rejectAssociation(assoc, ASC_RESULT_REJECTEDTRANSIENT,
                       ASC_SOURCE_SERVICEPROVIDER_PRESENTATION_RELATED,
@@ -260,32 +244,30 @@ static int handleAssociation(T_ASC_Association *assoc)
 
   std::vector<const char *> ts;
   ts.reserve(profile.transferSyntaxes.size());
-  for (const auto& uid : profile.transferSyntaxes)
+  for (const auto &uid : profile.transferSyntaxes)
     ts.push_back(uid.c_str());
-  if (profile.acceptAll)
-  {
+  if (profile.acceptAll) {
     static const char *all[] = {
-      UID_JPEGLSLosslessTransferSyntax,
-      UID_JPEG2000LosslessOnlyTransferSyntax,
-      UID_JPEGProcess14SV1TransferSyntax,
-      UID_JPEGLSLossyTransferSyntax,
-      UID_JPEG2000TransferSyntax,
-      UID_JPEGProcess1TransferSyntax,
-      UID_JPEGProcess2_4TransferSyntax,
-      UID_RLELosslessTransferSyntax,
-      UID_DeflatedExplicitVRLittleEndianTransferSyntax,
-      UID_BigEndianExplicitTransferSyntax,
+        UID_JPEGLSLosslessTransferSyntax,
+        UID_JPEG2000LosslessOnlyTransferSyntax,
+        UID_JPEGProcess14SV1TransferSyntax,
+        UID_JPEGLSLossyTransferSyntax,
+        UID_JPEG2000TransferSyntax,
+        UID_JPEGProcess1TransferSyntax,
+        UID_JPEGProcess2_4TransferSyntax,
+        UID_RLELosslessTransferSyntax,
+        UID_DeflatedExplicitVRLittleEndianTransferSyntax,
+        UID_BigEndianExplicitTransferSyntax,
     };
     for (const char *u : all)
       ts.push_back(u);
   }
-  if (ts.empty() || profile.acceptAll)
-  {
+  if (ts.empty() || profile.acceptAll) {
     ts.push_back(UID_LittleEndianExplicitTransferSyntax);
     ts.push_back(UID_LittleEndianImplicitTransferSyntax);
   }
 
-  const char *abstractSyntaxes[] = { UID_VerificationSOPClass };
+  const char *abstractSyntaxes[] = {UID_VerificationSOPClass};
   OFCondition cond = ASC_acceptContextsWithPreferredTransferSyntaxes(
       assoc->params, abstractSyntaxes, 1, ts.data(),
       static_cast<int>(ts.size()));
@@ -294,8 +276,7 @@ static int handleAssociation(T_ASC_Association *assoc)
         assoc->params, dcmAllStorageSOPClassUIDs,
         numberOfDcmAllStorageSOPClassUIDs, ts.data(),
         static_cast<int>(ts.size()));
-  if (cond.bad())
-  {
+  if (cond.bad()) {
     logmsg(std::string("cannot accept presentation contexts: ") + cond.text());
     rejectAssociation(assoc, ASC_RESULT_REJECTEDTRANSIENT,
                       ASC_SOURCE_SERVICEPROVIDER_PRESENTATION_RELATED,
@@ -314,8 +295,7 @@ static int handleAssociation(T_ASC_Association *assoc)
   ctx.peer = assoc->params->DULparams.callingPresentationAddress;
   ctx.group = group;
 
-  for (;;)
-  {
+  for (;;) {
     T_DIMSE_Message msg;
     T_ASC_PresentationContextID presID;
     DcmDataset *statusDetail = nullptr;
@@ -323,38 +303,30 @@ static int handleAssociation(T_ASC_Association *assoc)
                                 &statusDetail);
     delete statusDetail;
 
-    if (cond == DUL_PEERREQUESTEDRELEASE)
-    {
+    if (cond == DUL_PEERREQUESTEDRELEASE) {
       ASC_acknowledgeRelease(assoc);
       return 0;
     }
-    if (cond.bad())
-    {
+    if (cond.bad()) {
       logmsg(std::string("association ended: ") + cond.text());
       return 0;
     }
 
-    if (msg.CommandField == DIMSE_C_ECHO_RQ)
-    {
+    if (msg.CommandField == DIMSE_C_ECHO_RQ) {
       DIMSE_sendEchoResponse(assoc, presID, &msg.msg.CEchoRQ, STATUS_Success,
                              nullptr);
-    }
-    else if (msg.CommandField == DIMSE_C_STORE_RQ)
-    {
+    } else if (msg.CommandField == DIMSE_C_STORE_RQ) {
       DcmFileFormat ff;
       DcmDataset *dset = ff.getDataset();
       ctx.ff = &ff;
-      cond = DIMSE_storeProvider(assoc, presID, &msg.msg.CStoreRQ, nullptr,
-                                 OFTrue, &dset, storeCallback, &ctx,
-                                 DIMSE_BLOCKING, 0);
-      if (cond.bad())
-      {
+      cond =
+          DIMSE_storeProvider(assoc, presID, &msg.msg.CStoreRQ, nullptr, OFTrue,
+                              &dset, storeCallback, &ctx, DIMSE_BLOCKING, 0);
+      if (cond.bad()) {
         logmsg(std::string("store failed: ") + cond.text());
         return 0;
       }
-    }
-    else
-    {
+    } else {
       logmsg("unexpected DIMSE command, aborting");
       ASC_abortAssociation(assoc);
       return 0;
@@ -364,139 +336,119 @@ static int handleAssociation(T_ASC_Association *assoc)
 
 // BCP 195 TLS from <spool>/tls/: key.pem + cert.pem mandatory, ca.pem
 // switches on peer-certificate verification
-static DcmTLSTransportLayer *makeTLSLayer(const std::string& dir,
-                                          std::string& err)
-{
+static DcmTLSTransportLayer *makeTLSLayer(const std::string &dir,
+                                          std::string &err) {
   DcmTLSTransportLayer::initializeOpenSSL();
   DcmTLSTransportLayer *layer =
       new DcmTLSTransportLayer(NET_ACCEPTOR, nullptr, OFFalse);
-  if (layer->setTLSProfile(TSP_Profile_BCP195).bad()
-      || layer->activateCipherSuites().bad())
-  {
+  if (layer->setTLSProfile(TSP_Profile_BCP195).bad() ||
+      layer->activateCipherSuites().bad()) {
     err = "cannot activate the BCP 195 TLS profile";
     return nullptr;
   }
   const std::string key = dir + "/key.pem", cert = dir + "/cert.pem";
-  if (layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).bad()
-      || layer->setCertificateFile(cert.c_str(), DCF_Filetype_PEM, TSP_Profile_BCP195).bad()
-      || !layer->checkPrivateKeyMatchesCertificate())
-  {
+  if (layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).bad() ||
+      layer
+          ->setCertificateFile(cert.c_str(), DCF_Filetype_PEM,
+                               TSP_Profile_BCP195)
+          .bad() ||
+      !layer->checkPrivateKeyMatchesCertificate()) {
     err = "cannot load '" + key + "' / '" + cert + "'";
     return nullptr;
   }
   const std::string ca = dir + "/ca.pem";
-  if (pathExists(ca))
-  {
-    if (layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).bad())
-    {
+  if (pathExists(ca)) {
+    if (layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).bad()) {
       err = "cannot load '" + ca + "'";
       return nullptr;
     }
     layer->setCertificateVerification(DCV_requireCertificate);
-  }
-  else
+  } else
     layer->setCertificateVerification(DCV_ignoreCertificate);
   return layer;
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   std::string spoolArg;
   long listenPort = 0;
   bool once = false, useTLS = false;
-  for (int i = 1; i < argc; i++)
-  {
+  for (int i = 1; i < argc; i++) {
     const std::string a = argv[i];
     if (a == "-s" && i + 1 < argc)
       spoolArg = argv[++i];
-    else if (a == "-w" && i + 1 < argc)
-    {
+    else if (a == "-w" && i + 1 < argc) {
       const long long mb = atoll(argv[++i]);
-      if (mb < 0)
-      {
+      if (mb < 0) {
         std::fprintf(stderr, "dicomq-recv: -w must not be negative\n");
         return 100;
       }
       watermarkBytes = mb * 1024 * 1024;
-    }
-    else if (a == "--listen" && i + 1 < argc)
-    {
+    } else if (a == "--listen" && i + 1 < argc) {
       listenPort = atol(argv[++i]);
-      if (listenPort < 1 || listenPort > 65535)
-      {
+      if (listenPort < 1 || listenPort > 65535) {
         std::fprintf(stderr, "dicomq-recv: --listen port must be 1..65535\n");
         return 100;
       }
-    }
-    else if (a == "--once")
+    } else if (a == "--once")
       once = true;
     else if (a == "--tls")
       useTLS = true;
-    else
-    {
+    else {
       std::fprintf(stderr,
-          "usage: dicomq-recv [-s <spool>] [-w <watermark-MB>] "
-          "[--listen <port>] [--once] [--tls]\n");
+                   "usage: dicomq-recv [-s <spool>] [-w <watermark-MB>] "
+                   "[--listen <port>] [--once] [--tls]\n");
       return 100;
     }
   }
 
   sp = Spool(spoolArg);
-  if (!isDir(sp.queueTmp()) || !isDir(sp.queueTodo()))
-  {
+  if (!isDir(sp.queueTmp()) || !isDir(sp.queueTodo())) {
     logmsg("'" + sp.root + "' is not a dicomq spool");
     return 111;
   }
 
   OFStandard::initializeNetwork();
 
-  if (listenPort == 0)
-  {
+  if (listenPort == 0) {
     // supervisor mode: the connected socket is fd 0
     const int sock = dup(0);
     if (sock < 0)
       return 111;
     const int devnull = open("/dev/null", O_RDWR);
-    if (devnull >= 0)
-    {
+    if (devnull >= 0) {
       dup2(devnull, 0);
       dup2(devnull, 1);
       if (devnull > 1)
         close(devnull);
     }
     dcmExternalSocketHandle.set(sock);
-    listenPort = 1024;  // dummy; never bound
+    listenPort = 1024; // dummy; never bound
     once = true;
   }
 
   T_ASC_Network *net = nullptr;
-  OFCondition cond = ASC_initializeNetwork(NET_ACCEPTOR,
-      static_cast<int>(listenPort), 30, &net);
-  if (cond.bad())
-  {
+  OFCondition cond = ASC_initializeNetwork(
+      NET_ACCEPTOR, static_cast<int>(listenPort), 30, &net);
+  if (cond.bad()) {
     logmsg(std::string("cannot initialize network: ") + cond.text());
     return 111;
   }
 
-  if (useTLS)
-  {
+  if (useTLS) {
     std::string err;
     DcmTLSTransportLayer *layer = makeTLSLayer(sp.root + "/tls", err);
-    if (!layer || ASC_setTransportLayer(net, layer, 1).bad())
-    {
+    if (!layer || ASC_setTransportLayer(net, layer, 1).bad()) {
       logmsg("TLS setup failed: " + (err.empty() ? "transport layer" : err));
       return 111;
     }
   }
 
   int rc = 0;
-  do
-  {
+  do {
     T_ASC_Association *assoc = nullptr;
     cond = ASC_receiveAssociation(net, &assoc, ASC_DEFAULTMAXPDU, nullptr,
                                   nullptr, useTLS ? OFTrue : OFFalse);
-    if (cond.bad())
-    {
+    if (cond.bad()) {
       logmsg(std::string("cannot receive association: ") + cond.text());
       rc = 111;
       break;

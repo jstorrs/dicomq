@@ -21,21 +21,20 @@ struct KeyValueFile {
   std::vector<std::pair<std::string, std::string>> fields;
 
   // First value for key, or "" if absent.
-  std::string get(const std::string& key) const;
+  std::string get(const std::string &key) const;
 
   // Number of values recorded for key.
-  size_t count(const std::string& key) const;
+  size_t count(const std::string &key) const;
 
-  void add(const std::string& key, const std::string& value);
+  void add(const std::string &key, const std::string &value);
 
   // Parse path. Unknown keys are preserved; malformed lines are an
   // error (these files are machine-written).
-  static bool read(const std::string& path, KeyValueFile& kv,
-                   std::string& err);
+  static bool read(const std::string &path, KeyValueFile &kv, std::string &err);
 
   // Serialize to path. NOT durable on its own: write to a tmp path and
   // publish with commitFile() (see writeKeyValueCommitted).
-  bool write(const std::string& path, std::string& err) const;
+  bool write(const std::string &path, std::string &err) const;
 };
 
 } // namespace dicomq

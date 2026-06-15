@@ -17,29 +17,24 @@ using namespace dicomq;
 
 static int failures = 0;
 
-static void expectEq(const std::string& got, const std::string& want,
-                     const char* what)
-{
-  if (got != want)
-  {
+static void expectEq(const std::string &got, const std::string &want,
+                     const char *what) {
+  if (got != want) {
     std::fprintf(stderr, "FAIL %s: got '%s' want '%s'\n", what, got.c_str(),
                  want.c_str());
     failures++;
   }
 }
 
-static void expectLossy(const std::string& uid, bool want, const char* what)
-{
-  if (isLossyTransferSyntaxUID(uid) != want)
-  {
+static void expectLossy(const std::string &uid, bool want, const char *what) {
+  if (isLossyTransferSyntaxUID(uid) != want) {
     std::fprintf(stderr, "FAIL %s: isLossy('%s') != %d\n", what, uid.c_str(),
                  want);
     failures++;
   }
 }
 
-int main()
-{
+int main() {
   // name -> UID resolution, and UID passthrough
   expectEq(transferSyntaxUID("ExplicitVRLittleEndian"), "1.2.840.10008.1.2.1",
            "name resolves to UID");
@@ -73,13 +68,12 @@ int main()
   {
     const std::string tmp =
         "/tmp/dicomq-group-test." + std::to_string(getpid());
-    auto put = [&](const std::string& body) {
+    auto put = [&](const std::string &body) {
       std::ofstream o(tmp, std::ios::trunc);
       o << body;
     };
-    auto expect = [&](bool cond, const char* what) {
-      if (!cond)
-      {
+    auto expect = [&](bool cond, const char *what) {
+      if (!cond) {
         std::fprintf(stderr, "FAIL group %s\n", what);
         failures++;
       }
@@ -93,16 +87,14 @@ int main()
 
     put("study 120\n");
     g = GroupConfig();
-    expect(GroupConfig::load(tmp, g, err)
-               && g.mode == GroupConfig::Mode::Study
-               && g.quiescenceSeconds == 120,
+    expect(GroupConfig::load(tmp, g, err) &&
+               g.mode == GroupConfig::Mode::Study && g.quiescenceSeconds == 120,
            "study 120 parses");
 
     put("series 90\n");
     g = GroupConfig();
-    expect(GroupConfig::load(tmp, g, err)
-               && g.mode == GroupConfig::Mode::Series
-               && g.quiescenceSeconds == 90,
+    expect(GroupConfig::load(tmp, g, err) &&
+               g.mode == GroupConfig::Mode::Series && g.quiescenceSeconds == 90,
            "series 90 parses");
 
     put("bogus 5\n");

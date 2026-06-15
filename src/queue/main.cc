@@ -35,8 +35,7 @@ using namespace dicomq;
 
 static Spool sp;
 
-static std::string humanAge(long s)
-{
+static std::string humanAge(long s) {
   char buf[32];
   if (s < 0)
     s = 0;
@@ -58,11 +57,9 @@ struct QueueStats {
 
 // Fold the messages in dir (sitting at retry rung `level`) into q. A batch
 // counts as one message (its objects are one study/series unit).
-static void scanInto(QueueStats& q, const std::string& dir, int level,
-                     time_t now)
-{
-  for (const auto& m : listMessages(dir))
-  {
+static void scanInto(QueueStats &q, const std::string &dir, int level,
+                     time_t now) {
+  for (const auto &m : listMessages(dir)) {
     q.count++;
     const long age = static_cast<long>(now - idTime(m.id));
     if (age > q.oldest)
@@ -73,21 +70,18 @@ static void scanInto(QueueStats& q, const std::string& dir, int level,
 }
 
 // Count .dcm files under dir, recursing (hold/ mirrors origin subpaths).
-static size_t countDcm(const std::string& dir)
-{
+static size_t countDcm(const std::string &dir) {
   size_t n = 0;
   std::error_code ec;
-  for (const auto& e : fs::recursive_directory_iterator(dir, ec))
-  {
+  for (const auto &e : fs::recursive_directory_iterator(dir, ec)) {
     if (e.is_regular_file(ec) && hasDcmSuffix(e.path().filename().string()))
       n++;
   }
   return n;
 }
 
-static void summaryLine(const std::string& label, const QueueStats& q,
-                        const std::string& extra)
-{
+static void summaryLine(const std::string &label, const QueueStats &q,
+                        const std::string &extra) {
   std::printf("%-20s %4zu message%s", label.c_str(), q.count,
               q.count == 1 ? " " : "s");
   if (q.count)
@@ -99,9 +93,8 @@ static void summaryLine(const std::string& label, const QueueStats& q,
 
 // Read Source/Receiving AET from a message's file-meta header, leaving a
 // field untouched (the caller's "?" placeholder) when the tag is absent.
-static void readAETs(const std::string& path, std::string& from,
-                     std::string& to)
-{
+static void readAETs(const std::string &path, std::string &from,
+                     std::string &to) {
   FileMeta m;
   if (!readFileMeta(path, m))
     return;
@@ -111,15 +104,12 @@ static void readAETs(const std::string& path, std::string& from,
     to = m.receivingAET;
 }
 
-static void listDestMessages(const std::string& dest)
-{
+static void listDestMessages(const std::string &dest) {
   const time_t now = time(nullptr);
-  for (const auto& d : routeQueueDirs(sp, dest))
-    for (const auto& m : listMessages(d.first))
-    {
+  for (const auto &d : routeQueueDirs(sp, dest))
+    for (const auto &m : listMessages(d.first)) {
       std::string from = "?", to = "?", suffix;
-      if (m.isBatch)
-      {
+      if (m.isBatch) {
         // a batch carries its AETs (and routing) on every member; read the
         // first, and note the object count
         const std::string bdir = messagePath(d.first, m.id, true);
@@ -127,8 +117,7 @@ static void listDestMessages(const std::string& dest)
         if (!objs.empty())
           readAETs(dcmPath(bdir, objs.front()), from, to);
         suffix = "  [batch: " + std::to_string(objs.size()) + " objects]";
-      }
-      else
+      } else
         readAETs(dcmPath(d.first, m.id), from, to);
       std::printf("%s  age %-4s  retry %d  %s -> %s%s\n", m.id.c_str(),
                   humanAge(static_cast<long>(now - idTime(m.id))).c_str(),
@@ -136,13 +125,11 @@ static void listDestMessages(const std::string& dest)
     }
 }
 
-static void destSummary(const std::string& dest)
-{
+static void destSummary(const std::string &dest) {
   const time_t now = time(nullptr);
   QueueStats q;
   std::string rungs;
-  for (const auto& d : routeQueueDirs(sp, dest))
-  {
+  for (const auto &d : routeQueueDirs(sp, dest)) {
     QueueStats r;
     scanInto(r, d.first, d.second, now);
     if (d.second >= 1 && r.count)
@@ -158,23 +145,20 @@ static void destSummary(const std::string& dest)
   KeyValueFile status;
   std::string err;
   if (KeyValueFile::read(sp.routeStatus(dest), status, err))
-    extra += "[down until " + status.get("next-attempt-after") + ": "
-             + status.get("last-failure") + "] ";
+    extra += "[down until " + status.get("next-attempt-after") + ": " +
+             status.get("last-failure") + "] ";
   if (!rungs.empty())
     extra += "[retry" + rungs + "]";
   summaryLine("route/" + dest, q, extra);
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   std::string spoolArg, destArg;
   int opt;
-  while ((opt = getopt(argc, argv, "s:")) != -1)
-  {
+  while ((opt = getopt(argc, argv, "s:")) != -1) {
     if (opt == 's')
       spoolArg = optarg;
-    else
-    {
+    else {
       std::fprintf(stderr, "usage: dicomq-queue [-s <spool>] [<DEST>]\n");
       return 100;
     }
@@ -184,20 +168,18 @@ int main(int argc, char **argv)
 
   sp = Spool(spoolArg);
 
-  if (!destArg.empty())
-  {
+  if (!destArg.empty()) {
     listDestMessages(destArg);
     return 0;
   }
 
   const time_t now = time(nullptr);
-  for (const auto& aet : listSubdirs(sp.queueTodo()))
-  {
+  for (const auto &aet : listSubdirs(sp.queueTodo())) {
     QueueStats q;
     scanInto(q, sp.queueTodoAET(aet), 0, now);
     summaryLine("queue/todo/" + aet, q, "");
   }
-  for (const auto& dest : listSubdirs(sp.routeRoot()))
+  for (const auto &dest : listSubdirs(sp.routeRoot()))
     destSummary(dest);
   std::printf("%-20s %4zu messages\n", "hold", countDcm(sp.holdDir()));
   std::printf("%-20s %4zu messages\n", "corrupt", countDcm(sp.corruptDir()));

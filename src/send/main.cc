@@ -51,15 +51,13 @@
 using namespace dicomq;
 
 static Spool sp;
-static std::map<std::string, pid_t> running;  // dest -> dicomq-remote pid
+static std::map<std::string, pid_t> running; // dest -> dicomq-remote pid
 
-static void logmsg(const std::string& m)
-{
+static void logmsg(const std::string &m) {
   std::fprintf(stderr, "dicomq-send: %s\n", m.c_str());
 }
 
-static std::string selfExecutable()
-{
+static std::string selfExecutable() {
 #ifdef __APPLE__
   char buf[PATH_MAX];
   uint32_t size = sizeof(buf);
@@ -68,8 +66,7 @@ static std::string selfExecutable()
 #else
   char buf[PATH_MAX];
   const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-  if (n > 0)
-  {
+  if (n > 0) {
     buf[n] = '\0';
     return buf;
   }
@@ -79,31 +76,27 @@ static std::string selfExecutable()
 
 // prefer the sibling binary (same directory as this executable) so the
 // suite works from a build tree; fall back to PATH
-static std::string siblingPath(const char *name)
-{
+static std::string siblingPath(const char *name) {
   const std::string self = selfExecutable();
   const size_t slash = self.rfind('/');
-  if (slash != std::string::npos)
-  {
+  if (slash != std::string::npos) {
     const std::string candidate = self.substr(0, slash + 1) + name;
     if (pathExists(candidate))
       return candidate;
   }
-  return name;  // execvp will search PATH
+  return name; // execvp will search PATH
 }
 
-static pid_t spawn(const char *prog, const std::vector<std::string>& args)
-{
+static pid_t spawn(const char *prog, const std::vector<std::string> &args) {
   const std::string path = siblingPath(prog);
   std::vector<char *> argv;
   argv.push_back(const_cast<char *>(path.c_str()));
-  for (const auto& a : args)
+  for (const auto &a : args)
     argv.push_back(const_cast<char *>(a.c_str()));
   argv.push_back(nullptr);
 
   const pid_t pid = fork();
-  if (pid == 0)
-  {
+  if (pid == 0) {
     execvp(argv[0], argv.data());
     std::fprintf(stderr, "dicomq-send: cannot exec %s: %s\n", argv[0],
                  strerror(errno));
@@ -112,8 +105,7 @@ static pid_t spawn(const char *prog, const std::vector<std::string>& args)
   return pid;
 }
 
-static int runChild(const char *prog, const std::vector<std::string>& args)
-{
+static int runChild(const char *prog, const std::vector<std::string> &args) {
   const pid_t pid = spawn(prog, args);
   if (pid < 0)
     return 111;
@@ -123,9 +115,8 @@ static int runChild(const char *prog, const std::vector<std::string>& args)
   return WIFEXITED(status) ? WEXITSTATUS(status) : 111;
 }
 
-static std::string resolveMaildir(const std::string& aetDir,
-                                  const std::string& arg)
-{
+static std::string resolveMaildir(const std::string &aetDir,
+                                  const std::string &arg) {
   if (!arg.empty() && arg[0] == '/')
     return arg;
   return aetDir + "/" + arg;
@@ -139,50 +130,43 @@ static std::string resolveMaildir(const std::string& aetDir,
 #ifdef __linux__
 static int inotifyFd = -1;
 
-static void watchAetDir(const std::string& aet)
-{
+static void watchAetDir(const std::string &aet) {
   if (inotifyFd >= 0)
     inotify_add_watch(inotifyFd, sp.queueTodoAET(aet).c_str(), IN_MOVED_TO);
 }
 
-static void watchQueue()
-{
+static void watchQueue() {
   inotifyFd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   if (inotifyFd < 0)
     return;
   if (inotify_add_watch(inotifyFd, sp.queueTodo().c_str(),
-                        IN_CREATE | IN_MOVED_TO) < 0)
-  {
+                        IN_CREATE | IN_MOVED_TO) < 0) {
     close(inotifyFd);
     inotifyFd = -1;
     return;
   }
-  for (const auto& aet : listSubdirs(sp.queueTodo()))
+  for (const auto &aet : listSubdirs(sp.queueTodo()))
     watchAetDir(aet);
 }
 
-static void waitForWork(long intervalSeconds)
-{
-  if (inotifyFd < 0)
-  {
+static void waitForWork(long intervalSeconds) {
+  if (inotifyFd < 0) {
     sleep(static_cast<unsigned>(intervalSeconds));
     return;
   }
-  struct pollfd pfd = { inotifyFd, POLLIN, 0 };
+  struct pollfd pfd = {inotifyFd, POLLIN, 0};
   poll(&pfd, 1, static_cast<int>(intervalSeconds * 1000));
   // drain events; a newly appeared AET subdir gets its own watch so its
   // *later* objects wake us. Its first object is still caught by the
   // scan that follows, and the periodic scan backstops any dropped event.
   alignas(struct inotify_event) char buf[4096];
   ssize_t n;
-  while ((n = read(inotifyFd, buf, sizeof(buf))) > 0)
-  {
-    for (char *p = buf; p < buf + n; )
-    {
+  while ((n = read(inotifyFd, buf, sizeof(buf))) > 0) {
+    for (char *p = buf; p < buf + n;) {
       const struct inotify_event *ev =
           reinterpret_cast<const struct inotify_event *>(p);
-      if (ev->len > 0 && (ev->mask & IN_ISDIR)
-          && (ev->mask & (IN_CREATE | IN_MOVED_TO)))
+      if (ev->len > 0 && (ev->mask & IN_ISDIR) &&
+          (ev->mask & (IN_CREATE | IN_MOVED_TO)))
         watchAetDir(ev->name);
       p += sizeof(struct inotify_event) + ev->len;
     }
@@ -190,8 +174,7 @@ static void waitForWork(long intervalSeconds)
 }
 #else
 static void watchQueue() {}
-static void waitForWork(long intervalSeconds)
-{
+static void waitForWork(long intervalSeconds) {
   sleep(static_cast<unsigned>(intervalSeconds));
 }
 #endif
@@ -202,49 +185,43 @@ static void waitForWork(long intervalSeconds)
 // atomic rename frees the UID rendezvous name and commits the batch as a
 // directory-message at once; a straggler arriving afterward simply starts
 // the next batch (docs/study-mode.md "the batch boundary is race-free").
-static void sweepAccum()
-{
+static void sweepAccum() {
   const time_t now = time(nullptr);
-  for (const auto& aet : listSubdirs(sp.accumRoot()))
-  {
+  for (const auto &aet : listSubdirs(sp.accumRoot())) {
     std::string err;
     GroupConfig group;
-    if (!GroupConfig::load(sp.aetDir(aet) + "/group", group, err)
-        || !group.enabled())
-      continue;  // not (or no longer) a grouping AET: leave its dirs alone
+    if (!GroupConfig::load(sp.aetDir(aet) + "/group", group, err) ||
+        !group.enabled())
+      continue; // not (or no longer) a grouping AET: leave its dirs alone
 
-    for (const auto& uid : listSubdirs(sp.accumAET(aet)))
-    {
+    for (const auto &uid : listSubdirs(sp.accumAET(aet))) {
       const std::string dir = sp.accumGroup(aet, uid);
       struct stat st;
       if (stat(dir.c_str(), &st) != 0)
         continue;
       if (now - st.st_mtime < group.quiescenceSeconds)
-        continue;  // still accumulating: quiet for less than T
+        continue; // still accumulating: quiet for less than T
 
       const size_t n = listIds(dir).size();
-      if (n == 0)
-      {
-        rmdir(dir.c_str());  // empty and quiescent: tidy up, ignore failure
+      if (n == 0) {
+        rmdir(dir.c_str()); // empty and quiescent: tidy up, ignore failure
         continue;
       }
 
       const std::string todoAet = sp.queueTodoAET(aet);
-      if (!mkdirIfMissing(todoAet, err))
-      {
+      if (!mkdirIfMissing(todoAet, err)) {
         logmsg("cannot seal " + aet + "/" + uid + ": " + err);
         continue;
       }
       const std::string id = generateId();
-      if (rename(dir.c_str(), (todoAet + "/" + id).c_str()) != 0)
-      {
+      if (rename(dir.c_str(), (todoAet + "/" + id).c_str()) != 0) {
         logmsg("cannot seal " + aet + "/" + uid + ": " + strerror(errno));
         continue;
       }
       if (!fsyncPath(todoAet, err) || !fsyncPath(sp.accumAET(aet), err))
         logmsg("sealed " + id + " but cannot fsync: " + err);
-      logmsg("sealed " + aet + "/" + uid + " as batch " + id + " ("
-             + std::to_string(n) + " objects)");
+      logmsg("sealed " + aet + "/" + uid + " as batch " + id + " (" +
+             std::to_string(n) + " objects)");
     }
   }
 }
@@ -252,18 +229,16 @@ static void sweepAccum()
 // route one message from queue/todo/<aet>/; on success it leaves there.
 // The called AET is the subdir name, so routing opens no DICOM. A message
 // is a single .dcm or a sealed batch directory (msg.isBatch).
-static void processMessage(const std::string& aet, const Message& msg)
-{
+static void processMessage(const std::string &aet, const Message &msg) {
   std::string err;
-  const std::string& id = msg.id;
+  const std::string &id = msg.id;
   const bool batch = msg.isBatch;
   const std::string srcDir = sp.queueTodoAET(aet);
   const std::string aetDir = sp.aetDir(aet);
 
   // recv only creates queue/todo/<AET>/ under a validated aet/<AET>/, so
   // this is a defensive guard for a hand-placed object
-  if (!isDir(aetDir))
-  {
+  if (!isDir(aetDir)) {
     logmsg("failing " + id + ": unknown called AET '" + aet + "'");
     if (!moveMessage(srcDir, sp.failedDir(), id, err, batch))
       logmsg("cannot fail " + id + ": " + err);
@@ -271,52 +246,40 @@ static void processMessage(const std::string& aet, const Message& msg)
   }
 
   std::vector<DeliverInstruction> instructions;
-  if (!loadDeliver(aetDir + "/deliver", instructions, err))
-  {
+  if (!loadDeliver(aetDir + "/deliver", instructions, err)) {
     logmsg("deferring " + id + ": " + err);
     return;
   }
 
   // validate every instruction before executing any, so a config typo
   // defers the whole message instead of half-delivering it
-  for (const auto& in : instructions)
-  {
-    if (in.kind == DeliverInstruction::Kind::Forward)
-    {
-      if (!isDir(sp.destDir(in.arg)) || !isDir(sp.routeTodo(in.arg)))
-      {
-        logmsg("deferring " + id + ": destination '" + in.arg
-               + "' has no dest/ config or route/ queue");
+  for (const auto &in : instructions) {
+    if (in.kind == DeliverInstruction::Kind::Forward) {
+      if (!isDir(sp.destDir(in.arg)) || !isDir(sp.routeTodo(in.arg))) {
+        logmsg("deferring " + id + ": destination '" + in.arg +
+               "' has no dest/ config or route/ queue");
         return;
       }
-    }
-    else if (!isDir(resolveMaildir(aetDir, in.arg) + "/new"))
-    {
-      logmsg("deferring " + id + ": maildir '"
-             + resolveMaildir(aetDir, in.arg) + "' has no new/");
+    } else if (!isDir(resolveMaildir(aetDir, in.arg) + "/new")) {
+      logmsg("deferring " + id + ": maildir '" +
+             resolveMaildir(aetDir, in.arg) + "' has no new/");
       return;
     }
   }
 
-  for (const auto& in : instructions)
-  {
-    if (in.kind == DeliverInstruction::Kind::Forward)
-    {
+  for (const auto &in : instructions) {
+    if (in.kind == DeliverInstruction::Kind::Forward) {
       // fan out into the destination queue — a hardlink for a single
       // object, a hardlink-tree for a batch; already-present means a
       // crashed pass routed it here (idempotent fan-out)
-      if (!linkMessage(srcDir, sp.routeTodo(in.arg), id, err, batch))
-      {
+      if (!linkMessage(srcDir, sp.routeTodo(in.arg), id, err, batch)) {
         logmsg("deferring " + id + ": " + err);
         return;
       }
-    }
-    else
-    {
+    } else {
       const int rc = runChild("dicomq-local",
                               {id, resolveMaildir(aetDir, in.arg), srcDir});
-      if (rc != 0)
-      {
+      if (rc != 0) {
         logmsg("deferring " + id + ": dicomq-local exited " +
                std::to_string(rc));
         return;
@@ -328,25 +291,21 @@ static void processMessage(const std::string& aet, const Message& msg)
     logmsg("routed " + id + " but cannot dequeue: " + err);
 }
 
-static void reapAgents(bool block)
-{
-  while (!running.empty())
-  {
+static void reapAgents(bool block) {
+  while (!running.empty()) {
     const pid_t pid = waitpid(-1, nullptr, block ? 0 : WNOHANG);
     if (pid <= 0)
       return;
     for (auto it = running.begin(); it != running.end(); ++it)
-      if (it->second == pid)
-      {
+      if (it->second == pid) {
         running.erase(it);
         break;
       }
   }
 }
 
-static bool anyDue(const std::string& dir, int level, time_t now)
-{
-  for (const auto& m : listMessages(dir))
+static bool anyDue(const std::string &dir, int level, time_t now) {
+  for (const auto &m : listMessages(dir))
     if (messageDue(dir, m.id, level, now, m.isBatch))
       return true;
   return false;
@@ -354,16 +313,14 @@ static bool anyDue(const std::string& dir, int level, time_t now)
 
 // a destination has work if its todo/ holds anything (level 0 = always
 // due) or any retry/<k> rung holds a message past its backoff
-static bool destHasDueWork(const std::string& dest, time_t now)
-{
-  for (const auto& d : routeQueueDirs(sp, dest))
+static bool destHasDueWork(const std::string &dest, time_t now) {
+  for (const auto &d : routeQueueDirs(sp, dest))
     if (anyDue(d.first, d.second, now))
       return true;
   return false;
 }
 
-static void maybeTrigger(const std::string& dest)
-{
+static void maybeTrigger(const std::string &dest) {
   if (running.count(dest))
     return;
   if (pathExists(sp.routeHoldFlag(dest)))
@@ -371,46 +328,39 @@ static void maybeTrigger(const std::string& dest)
 
   std::string err;
   KeyValueFile status;
-  if (KeyValueFile::read(sp.routeStatus(dest), status, err))
-  {
+  if (KeyValueFile::read(sp.routeStatus(dest), status, err)) {
     const time_t next = parseIsoTime(status.get("next-attempt-after"));
     if (next != 0 && time(nullptr) < next)
-      return;  // destination-level backoff (dead-site cache)
+      return; // destination-level backoff (dead-site cache)
   }
 
-  if (destHasDueWork(dest, time(nullptr)))
-  {
+  if (destHasDueWork(dest, time(nullptr))) {
     const pid_t pid = spawn("dicomq-remote", {dest});
     if (pid > 0)
       running[dest] = pid;
   }
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   std::string spoolArg;
   long interval = 10;
   bool once = false;
-  for (int i = 1; i < argc; i++)
-  {
+  for (int i = 1; i < argc; i++) {
     const std::string a = argv[i];
     if (a == "-s" && i + 1 < argc)
       spoolArg = argv[++i];
-    else if (a == "-i" && i + 1 < argc)
-    {
+    else if (a == "-i" && i + 1 < argc) {
       interval = atol(argv[++i]);
-      if (interval <= 0)
-      {
-        std::fprintf(stderr, "dicomq-send: -i must be a positive number of seconds\n");
+      if (interval <= 0) {
+        std::fprintf(stderr,
+                     "dicomq-send: -i must be a positive number of seconds\n");
         return 100;
       }
-    }
-    else if (a == "--once")
+    } else if (a == "--once")
       once = true;
-    else
-    {
+    else {
       std::fprintf(stderr,
-          "usage: dicomq-send [-s <spool>] [-i <seconds>] [--once]\n");
+                   "usage: dicomq-send [-s <spool>] [-i <seconds>] [--once]\n");
       return 100;
     }
   }
@@ -419,8 +369,7 @@ int main(int argc, char **argv)
   // agents inherit the spool through the environment
   setenv("DICOMQ_SPOOL", sp.root.c_str(), 1);
 
-  if (!isDir(sp.queueTodo()) || !isDir(sp.queueTmp()))
-  {
+  if (!isDir(sp.queueTodo()) || !isDir(sp.queueTmp())) {
     std::fprintf(stderr, "dicomq-send: '%s' is not a dicomq spool\n",
                  sp.root.c_str());
     return 111;
@@ -429,17 +378,15 @@ int main(int argc, char **argv)
   if (!once)
     watchQueue();
 
-  for (;;)
-  {
+  for (;;) {
     reapAgents(false);
-    sweepAccum();  // seal quiescent study/series batches before routing
-    for (const auto& aet : listSubdirs(sp.queueTodo()))
-      for (const auto& msg : listMessages(sp.queueTodoAET(aet)))
+    sweepAccum(); // seal quiescent study/series batches before routing
+    for (const auto &aet : listSubdirs(sp.queueTodo()))
+      for (const auto &msg : listMessages(sp.queueTodoAET(aet)))
         processMessage(aet, msg);
-    for (const auto& dest : listSubdirs(sp.routeRoot()))
+    for (const auto &dest : listSubdirs(sp.routeRoot()))
       maybeTrigger(dest);
-    if (once)
-    {
+    if (once) {
       reapAgents(true);
       return 0;
     }
