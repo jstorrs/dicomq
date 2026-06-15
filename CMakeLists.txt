@@ -22,21 +22,31 @@ add_library(dicomq-common STATIC
 target_include_directories(dicomq-common PUBLIC src)
 target_compile_features(dicomq-common PUBLIC cxx_std_17)
 
+# DICOM-aware common helpers (file-meta reading). Kept apart from
+# dicomq-common so the DICOM-free programs need not link DCMTK; only the
+# programs that read a queued object's header link this. dcmdata is PUBLIC
+# so it propagates to those consumers.
+add_library(dicomq-dcm STATIC src/common/dcm.cc)
+target_include_directories(dicomq-dcm PUBLIC src)
+target_compile_features(dicomq-dcm PUBLIC cxx_std_17)
+target_link_libraries(dicomq-dcm PUBLIC DCMTK::dcmdata)
+
 foreach(prog recv send local remote clean inject queue ctl)
   add_executable(dicomq-${prog} src/${prog}/main.cc)
   target_link_libraries(dicomq-${prog} PRIVATE dicomq-common)
 endforeach()
 
-# dicomq-send and dicomq-clean speak no DICOM (routing is by directory).
-# The other programs read the DICOM file-meta header: recv/remote over
-# the network, inject on submission, and ctl/queue to recover a routed
-# message's AET (no sidecar carries it anymore).
+# dicomq-send, -local and -clean speak no DICOM (routing is by directory).
+# The rest are DICOM-aware: recv stamps and accepts objects over the
+# network; remote forwards them; inject submits them; and remote/inject/
+# ctl/queue read the file-meta header (via dicomq-dcm) to recover a routed
+# message's routing fields (no sidecar carries them anymore).
 target_link_libraries(dicomq-recv PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
-target_link_libraries(dicomq-remote PRIVATE DCMTK::dcmnet DCMTK::dcmtls
-                                            DCMTK::dcmjpeg DCMTK::dcmjpls)
-target_link_libraries(dicomq-inject PRIVATE DCMTK::dcmdata)
-target_link_libraries(dicomq-ctl PRIVATE DCMTK::dcmdata)
-target_link_libraries(dicomq-queue PRIVATE DCMTK::dcmdata)
+target_link_libraries(dicomq-remote PRIVATE dicomq-dcm DCMTK::dcmnet
+                      DCMTK::dcmtls DCMTK::dcmjpeg DCMTK::dcmjpls)
+target_link_libraries(dicomq-inject PRIVATE dicomq-dcm)
+target_link_libraries(dicomq-ctl PRIVATE dicomq-dcm)
+target_link_libraries(dicomq-queue PRIVATE dicomq-dcm)
 
 foreach(prog recv send local remote clean inject queue ctl)
   install(TARGETS dicomq-${prog} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

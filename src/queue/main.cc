@@ -15,13 +15,6 @@
 // AETs in the per-destination listing — a routed message carries no
 // sidecar that records them. The summary view opens no DICOM.
 
-#include "dcmtk/config/osconfig.h"
-
-#include "dcmtk/dcmdata/dcdeftag.h"
-#include "dcmtk/dcmdata/dcfilefo.h"
-#include "dcmtk/dcmdata/dcmetinf.h"
-#include "dcmtk/dcmdata/dcxfer.h"
-
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -32,6 +25,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "common/dcm.h"
 #include "common/kvfile.h"
 #include "common/message.h"
 #include "common/spool.h"
@@ -85,10 +79,7 @@ static size_t countDcm(const std::string& dir)
   std::error_code ec;
   for (const auto& e : fs::recursive_directory_iterator(dir, ec))
   {
-    if (!e.is_regular_file(ec))
-      continue;
-    const std::string nm = e.path().filename().string();
-    if (nm.size() > 4 && nm.compare(nm.size() - 4, 4, ".dcm") == 0)
+    if (e.is_regular_file(ec) && hasDcmSuffix(e.path().filename().string()))
       n++;
   }
   return n;
@@ -106,42 +97,24 @@ static void summaryLine(const std::string& label, const QueueStats& q,
   std::printf("\n");
 }
 
-// Read Source/Receiving AET from a message's file-meta header.
+// Read Source/Receiving AET from a message's file-meta header, leaving a
+// field untouched (the caller's "?" placeholder) when the tag is absent.
 static void readAETs(const std::string& path, std::string& from,
                      std::string& to)
 {
-  DcmFileFormat ff;
-  if (ff.loadFile(path.c_str(), EXS_Unknown, EGL_noChange, DCM_MaxReadLength,
-                  ERM_metaOnly).bad())
+  FileMeta m;
+  if (!readFileMeta(path, m))
     return;
-  DcmMetaInfo *m = ff.getMetaInfo();
-  if (!m)
-    return;
-  OFString s;
-  if (m->findAndGetOFString(DCM_SourceApplicationEntityTitle, s).good())
-    from = s.c_str();
-  if (m->findAndGetOFString(DCM_ReceivingApplicationEntityTitle, s).good())
-    to = s.c_str();
-}
-
-// todo/ (rung 0) then each retry/<k> rung, oldest schedule first.
-static std::vector<std::pair<std::string, int>> destDirs(const std::string& d)
-{
-  std::vector<std::pair<std::string, int>> dirs;
-  dirs.emplace_back(sp.routeTodo(d), 0);
-  for (const auto& lvl : listSubdirs(sp.routeRetryRoot(d)))
-  {
-    const int k = atoi(lvl.c_str());
-    if (k >= 1)
-      dirs.emplace_back(sp.routeRetry(d, k), k);
-  }
-  return dirs;
+  if (!m.sourceAET.empty())
+    from = m.sourceAET;
+  if (!m.receivingAET.empty())
+    to = m.receivingAET;
 }
 
 static void listDestMessages(const std::string& dest)
 {
   const time_t now = time(nullptr);
-  for (const auto& d : destDirs(dest))
+  for (const auto& d : routeQueueDirs(sp, dest))
     for (const auto& m : listMessages(d.first))
     {
       std::string from = "?", to = "?", suffix;
@@ -168,7 +141,7 @@ static void destSummary(const std::string& dest)
   const time_t now = time(nullptr);
   QueueStats q;
   std::string rungs;
-  for (const auto& d : destDirs(dest))
+  for (const auto& d : routeQueueDirs(sp, dest))
   {
     QueueStats r;
     scanInto(r, d.first, d.second, now);

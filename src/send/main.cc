@@ -356,14 +356,9 @@ static bool anyDue(const std::string& dir, int level, time_t now)
 // due) or any retry/<k> rung holds a message past its backoff
 static bool destHasDueWork(const std::string& dest, time_t now)
 {
-  if (anyDue(sp.routeTodo(dest), 0, now))
-    return true;
-  for (const auto& lvl : listSubdirs(sp.routeRetryRoot(dest)))
-  {
-    const int k = atoi(lvl.c_str());
-    if (k >= 1 && anyDue(sp.routeRetry(dest, k), k, now))
+  for (const auto& d : routeQueueDirs(sp, dest))
+    if (anyDue(d.first, d.second, now))
       return true;
-  }
   return false;
 }
 

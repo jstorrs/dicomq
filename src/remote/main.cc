@@ -45,9 +45,7 @@
 
 #include "dcmtk/config/osconfig.h"
 
-#include "dcmtk/dcmdata/dcdeftag.h"
 #include "dcmtk/dcmdata/dcfilefo.h"
-#include "dcmtk/dcmdata/dcmetinf.h"
 #include "dcmtk/dcmdata/dcrledrg.h"
 #include "dcmtk/dcmdata/dcrleerg.h"
 #include "dcmtk/dcmdata/dcuid.h"
@@ -70,6 +68,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "common/dcm.h"
 #include "common/kvfile.h"
 #include "common/message.h"
 #include "common/profile.h"
@@ -225,19 +224,10 @@ int main(int argc, char **argv)
 
   // read the routing fields one object needs from its file-meta header
   auto readObjectMeta = [](const std::string& path, Object& obj) -> bool {
-    DcmFileFormat ff;
-    if (ff.loadFile(path.c_str(), EXS_Unknown, EGL_noChange, DCM_MaxReadLength,
-                    ERM_metaOnly).bad())
+    FileMeta m;
+    if (!readFileMeta(path, m) || !m.hasRouting())
       return false;
-    DcmMetaInfo *m = ff.getMetaInfo();
-    OFString sc, si, ts;
-    if (!m
-        || m->findAndGetOFString(DCM_MediaStorageSOPClassUID, sc).bad()
-        || m->findAndGetOFString(DCM_MediaStorageSOPInstanceUID, si).bad()
-        || m->findAndGetOFString(DCM_TransferSyntaxUID, ts).bad()
-        || sc.empty() || si.empty() || ts.empty())
-      return false;
-    obj = {path, sc.c_str(), si.c_str(), ts.c_str()};
+    obj = {path, m.sopClass, m.sopInstance, m.transferSyntax};
     return true;
   };
 
@@ -289,13 +279,8 @@ int main(int argc, char **argv)
       work.push_back(std::move(item));
     }
   };
-  gather(sp.routeTodo(destName), 0);
-  for (const auto& lvl : listSubdirs(sp.routeRetryRoot(destName)))
-  {
-    const int k = atoi(lvl.c_str());
-    if (k >= 1)
-      gather(sp.routeRetry(destName, k), k);
-  }
+  for (const auto& d : routeQueueDirs(sp, destName))
+    gather(d.first, d.second);
   if (work.empty())
     return 0;
 

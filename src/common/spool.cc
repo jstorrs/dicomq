@@ -155,6 +155,11 @@ bool linkIdempotent(const std::string& from, const std::string& to,
   return fsyncPath(dirOf(to), err);
 }
 
+bool hasDcmSuffix(const std::string& name)
+{
+  return name.size() > 4 && name.compare(name.size() - 4, 4, ".dcm") == 0;
+}
+
 std::vector<std::string> listIds(const std::string& dir)
 {
   std::vector<std::string> ids;
@@ -162,7 +167,7 @@ std::vector<std::string> listIds(const std::string& dir)
   for (const auto& entry : fs::directory_iterator(dir, ec))
   {
     const std::string name = entry.path().filename().string();
-    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".dcm") == 0)
+    if (hasDcmSuffix(name))
       ids.push_back(name.substr(0, name.size() - 4));
   }
   std::sort(ids.begin(), ids.end());
@@ -180,6 +185,20 @@ std::vector<std::string> listSubdirs(const std::string& dir)
   }
   std::sort(names.begin(), names.end());
   return names;
+}
+
+std::vector<std::pair<std::string, int>>
+routeQueueDirs(const Spool& sp, const std::string& dest)
+{
+  std::vector<std::pair<std::string, int>> dirs;
+  dirs.emplace_back(sp.routeTodo(dest), 0);  // todo/ is rung 0: always due
+  for (const auto& lvl : listSubdirs(sp.routeRetryRoot(dest)))
+  {
+    const int k = atoi(lvl.c_str());
+    if (k >= 1)
+      dirs.emplace_back(sp.routeRetry(dest, k), k);
+  }
+  return dirs;
 }
 
 bool copyFile(const std::string& src, const std::string& dst, std::string& err)

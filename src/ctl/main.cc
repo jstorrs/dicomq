@@ -21,13 +21,6 @@
 // logged, not stored. Nothing is ever deleted; removal from hold/,
 // corrupt/, or failed/ is the operator's own rm.
 
-#include "dcmtk/config/osconfig.h"
-
-#include "dcmtk/dcmdata/dcdeftag.h"
-#include "dcmtk/dcmdata/dcfilefo.h"
-#include "dcmtk/dcmdata/dcmetinf.h"
-#include "dcmtk/dcmdata/dcxfer.h"
-
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -37,6 +30,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "common/dcm.h"
 #include "common/message.h"
 #include "common/spool.h"
 
@@ -109,17 +103,13 @@ static std::string metaPath(const std::string& dir, const std::string& id,
 }
 
 // Called AET from the file-meta header (0002,0018), sanitized for a path.
+// "" if the header cannot be read or carries no receiving AET.
 static std::string readCalledAET(const std::string& path)
 {
-  DcmFileFormat ff;
-  if (ff.loadFile(path.c_str(), EXS_Unknown, EGL_noChange, DCM_MaxReadLength,
-                  ERM_metaOnly).bad())
+  FileMeta m;
+  if (!readFileMeta(path, m) || m.receivingAET.empty())
     return "";
-  DcmMetaInfo *m = ff.getMetaInfo();
-  OFString s;
-  if (m && m->findAndGetOFString(DCM_ReceivingApplicationEntityTitle, s).good())
-    return sanitizeAET(s.c_str());
-  return "";
+  return sanitizeAET(m.receivingAET);
 }
 
 int main(int argc, char **argv)

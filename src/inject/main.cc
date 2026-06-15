@@ -29,6 +29,7 @@
 #include <cstring>
 #include <unistd.h>
 
+#include "common/dcm.h"
 #include "common/message.h"
 #include "common/spool.h"
 
@@ -73,13 +74,10 @@ int main(int argc, char **argv)
                    cond.text());
       return 100;
     }
-    OFString sopClass, sopInstance, xferUID;
     DcmMetaInfo *meta = ff.getMetaInfo();
-    if (!meta
-        || meta->findAndGetOFString(DCM_MediaStorageSOPClassUID, sopClass).bad()
-        || meta->findAndGetOFString(DCM_MediaStorageSOPInstanceUID, sopInstance).bad()
-        || meta->findAndGetOFString(DCM_TransferSyntaxUID, xferUID).bad()
-        || sopClass.empty() || sopInstance.empty() || xferUID.empty())
+    FileMeta fm;
+    extractFileMeta(meta, fm);
+    if (!fm.hasRouting())
     {
       std::fprintf(stderr,
           "dicomq-inject: '%s' has no usable file meta header (not Part 10?)\n",

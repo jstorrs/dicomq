@@ -6,6 +6,7 @@
 
 #include <ctime>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Spool primitives shared by every dicomq program. See dicomq/DESIGN.md
@@ -52,12 +53,22 @@ struct Spool {
   std::string corruptDir() const { return root + "/corrupt"; }
 };
 
+// True if name carries the ".dcm" message suffix.
+bool hasDcmSuffix(const std::string& name);
+
 // Ids of committed messages in dir (entries ending ".dcm", suffix
 // stripped), sorted — which is receive order. Missing dir = empty.
 std::vector<std::string> listIds(const std::string& dir);
 
 // Sorted subdirectory names of dir. Missing dir = empty.
 std::vector<std::string> listSubdirs(const std::string& dir);
+
+// The (directory, retry-level) pairs a destination's queue runner walks:
+// route/<dest>/todo at level 0, then each existing route/<dest>/retry/<k>
+// rung in ascending k. The rung-enumeration order lives here so that
+// dicomq-send, dicomq-remote, and dicomq-queue all agree on it.
+std::vector<std::pair<std::string, int>>
+routeQueueDirs(const Spool& sp, const std::string& dest);
 
 // Plain byte copy, no durability (callers publish with commitFile).
 bool copyFile(const std::string& src, const std::string& dst, std::string& err);
