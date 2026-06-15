@@ -1,0 +1,69 @@
+name: Linux build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # lets you trigger a run manually from the Actions tab / gh
+
+# Why this job exists: the only other build/test job runs on macOS. The
+# inotify-driven scan in src/send/main.cc is Linux-only (macOS falls back
+# to periodic scanning), so without a Linux runner that path — and any
+# other Linux-specific runtime behaviour — is never exercised in CI. This
+# job builds and runs the full ctest suite (unit + network integration)
+# on Ubuntu; loopback DICOM networking works on hosted runners, so the
+# storescu/storescp legs run for real here.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # DCMTK from apt is older than the 3.7.0 floor CMakeLists enforces
+      # (the CVE-2025-14607 fix), so build that exact version from source
+      # and cache it. Bump DCMTK_VERSION here and the cache key follows.
+      - name: Toolchain dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ make libssl-dev zlib1g-dev libpng-dev libtiff-dev
+
+      - name: Cache DCMTK
+        id: cache-dcmtk
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/dcmtk-install
+          key: dcmtk-3.7.0-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build DCMTK 3.7.0 (cache miss only)
+        if: steps.cache-dcmtk.outputs.cache-hit != 'true'
+        env:
+          DCMTK_VERSION: "3.7.0"
+        run: |
+          src="$RUNNER_TEMP/dcmtk-src"
+          git clone --depth 1 --branch "DCMTK-$DCMTK_VERSION" \
+            https://github.com/DCMTK/dcmtk.git "$src"
+          cmake -S "$src" -B "$src/build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DDCMTK_WITH_OPENSSL=ON \
+            -DDCMTK_WITH_ZLIB=ON \
+            -DDCMTK_WITH_TANDEM=OFF \
+            -DBUILD_APPS=ON \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/dcmtk-install"
+          cmake --build "$src/build" --parallel
+          cmake --install "$src/build"
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/dcmtk-install"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # storescu/storescp from the DCMTK we built are needed by the
+      # network integration legs; put them on PATH for the test harness.
+      - name: Test
+        run: |
+          export PATH="$RUNNER_TEMP/dcmtk-install/bin:$PATH"
+          ctest --test-dir build --output-on-failure
