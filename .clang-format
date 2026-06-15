@@ -1,0 +1,7 @@
+# dicomq house style: stock LLVM (2-space indent, attached braces,
+# 80 columns, '*'/'&' bound to the name). Deliberately near-stock so the
+# config stays tiny and matches what clangd and most C++ tooling assume.
+# Re-flow a file with: clang-format -i <file>   (or `git clang-format`).
+BasedOnStyle: LLVM
+ColumnLimit: 80
+InsertNewlineAtEOF: true

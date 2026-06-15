@@ -13,6 +13,13 @@ find_package(DCMTK 3.7.0 REQUIRED CONFIG)
 include(GNUInstallDirs)   # provides CMAKE_INSTALL_BINDIR used by install()
 enable_testing()
 
+# Emit build/compile_commands.json so clang-tidy and clangd know each
+# file's flags (see .clang-tidy). Warnings are dicomq's first-line linter;
+# kept advisory (no -Werror) so a new compiler's warnings never block a
+# build, only inform.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_compile_options(-Wall -Wextra)
+
 add_library(dicomq-common STATIC
   src/common/spool.cc
   src/common/kvfile.cc

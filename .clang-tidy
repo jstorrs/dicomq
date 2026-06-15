@@ -1,0 +1,21 @@
+# dicomq linter baseline. Conservative on purpose: real bug-finders and
+# performance checks, not stylistic noise (clang-format owns layout).
+# Run with:  clang-tidy -p build src/<prog>/main.cc
+# Auto-fix:  clang-tidy -p build --fix src/<prog>/main.cc
+# Needs build/compile_commands.json (CMAKE_EXPORT_COMPILE_COMMANDS=ON).
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -performance-inefficient-string-concatenation,
+  -performance-enum-size,
+  -portability-template-virtual-member-function
+
+# Only diagnose dicomq's own headers, never DCMTK's.
+HeaderFilterRegex: 'dicomq/src/'
+
+# Advisory for now: surface findings, don't fail the build on them.
+WarningsAsErrors: ''

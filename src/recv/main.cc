@@ -259,6 +259,7 @@ static int handleAssociation(T_ASC_Association *assoc)
   }
 
   std::vector<const char *> ts;
+  ts.reserve(profile.transferSyntaxes.size());
   for (const auto& uid : profile.transferSyntaxes)
     ts.push_back(uid.c_str());
   if (profile.acceptAll)
