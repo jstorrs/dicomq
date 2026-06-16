@@ -39,7 +39,6 @@
 #include "dcmtk/dcmdata/dcxfer.h"
 #include "dcmtk/dcmnet/dimse.h"
 #include "dcmtk/dcmnet/diutil.h"
-#include "dcmtk/dcmtls/tlslayer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +54,7 @@
 #include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
+#include "common/tls.h"
 
 using namespace dicomq;
 
@@ -334,40 +334,6 @@ static int handleAssociation(T_ASC_Association *assoc) {
   }
 }
 
-// BCP 195 TLS from <spool>/tls/: key.pem + cert.pem mandatory, ca.pem
-// switches on peer-certificate verification
-static DcmTLSTransportLayer *makeTLSLayer(const std::string &dir,
-                                          std::string &err) {
-  DcmTLSTransportLayer::initializeOpenSSL();
-  DcmTLSTransportLayer *layer =
-      new DcmTLSTransportLayer(NET_ACCEPTOR, nullptr, OFFalse);
-  if (layer->setTLSProfile(TSP_Profile_BCP195).bad() ||
-      layer->activateCipherSuites().bad()) {
-    err = "cannot activate the BCP 195 TLS profile";
-    return nullptr;
-  }
-  const std::string key = dir + "/key.pem", cert = dir + "/cert.pem";
-  if (layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).bad() ||
-      layer
-          ->setCertificateFile(cert.c_str(), DCF_Filetype_PEM,
-                               TSP_Profile_BCP195)
-          .bad() ||
-      !layer->checkPrivateKeyMatchesCertificate()) {
-    err = "cannot load '" + key + "' / '" + cert + "'";
-    return nullptr;
-  }
-  const std::string ca = dir + "/ca.pem";
-  if (pathExists(ca)) {
-    if (layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).bad()) {
-      err = "cannot load '" + ca + "'";
-      return nullptr;
-    }
-    layer->setCertificateVerification(DCV_requireCertificate);
-  } else
-    layer->setCertificateVerification(DCV_ignoreCertificate);
-  return layer;
-}
-
 int main(int argc, char **argv) {
   std::string spoolArg;
   long listenPort = 0;
@@ -435,8 +401,11 @@ int main(int argc, char **argv) {
   }
 
   if (useTLS) {
+    // inbound: an acceptor always presents key.pem + cert.pem; ca.pem switches
+    // on peer-certificate verification
     std::string err;
-    DcmTLSTransportLayer *layer = makeTLSLayer(sp.root + "/tls", err);
+    DcmTransportLayer *layer = makeTLSLayer(NET_ACCEPTOR, sp.root + "/tls",
+                                            /*requireOwnCert=*/true, err);
     if (!layer || ASC_setTransportLayer(net, layer, 1).bad()) {
       logmsg("TLS setup failed: " + (err.empty() ? "transport layer" : err));
       return 111;

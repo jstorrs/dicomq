@@ -38,6 +38,14 @@ target_include_directories(dicomq-dcm PUBLIC src)
 target_compile_features(dicomq-dcm PUBLIC cxx_std_17)
 target_link_libraries(dicomq-dcm PUBLIC DCMTK::dcmdata)
 
+# Shared BCP 195 TLS setup. Its own library so only dicomq-recv and
+# dicomq-remote (the two programs that speak TLS) pull in DCMTK::dcmtls;
+# dcmtls is PUBLIC so the link requirement propagates to those consumers.
+add_library(dicomq-tls STATIC src/common/tls.cc)
+target_include_directories(dicomq-tls PUBLIC src)
+target_compile_features(dicomq-tls PUBLIC cxx_std_17)
+target_link_libraries(dicomq-tls PUBLIC DCMTK::dcmtls PRIVATE dicomq-common)
+
 foreach(prog recv send local remote clean inject queue ctl)
   add_executable(dicomq-${prog} src/${prog}/main.cc)
   target_link_libraries(dicomq-${prog} PRIVATE dicomq-common)
@@ -49,10 +57,9 @@ endforeach()
 # with saveAsReceived(); inject submits them the same way; remote forwards
 # them; and remote/inject/ctl/queue read the file-meta header to recover a
 # routed message's routing fields (no sidecar carries them anymore).
-target_link_libraries(dicomq-recv PRIVATE dicomq-dcm DCMTK::dcmnet
-                      DCMTK::dcmtls)
-target_link_libraries(dicomq-remote PRIVATE dicomq-dcm DCMTK::dcmnet
-                      DCMTK::dcmtls DCMTK::dcmjpeg DCMTK::dcmjpls)
+target_link_libraries(dicomq-recv PRIVATE dicomq-dcm dicomq-tls DCMTK::dcmnet)
+target_link_libraries(dicomq-remote PRIVATE dicomq-dcm dicomq-tls DCMTK::dcmnet
+                      DCMTK::dcmjpeg DCMTK::dcmjpls)
 target_link_libraries(dicomq-inject PRIVATE dicomq-dcm)
 target_link_libraries(dicomq-ctl PRIVATE dicomq-dcm)
 target_link_libraries(dicomq-queue PRIVATE dicomq-dcm)

@@ -60,7 +60,6 @@
 #include "dcmtk/dcmjpls/djencode.h"
 #include "dcmtk/dcmnet/dimse.h"
 #include "dcmtk/dcmnet/diutil.h"
-#include "dcmtk/dcmtls/tlslayer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -77,6 +76,7 @@
 #include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
+#include "common/tls.h"
 
 using namespace dicomq;
 
@@ -544,32 +544,18 @@ int main(int argc, char **argv) {
     return 111;
   }
 
-  // dest/<DEST>/tls/ exists => DICOM TLS to this destination
+  // dest/<DEST>/tls/ exists => DICOM TLS to this destination. A requestor's own
+  // key.pem + cert.pem are optional (load only if present); ca.pem verifies the
+  // server.
   const std::string tlsDir = sp.destDir(destName) + "/tls";
   const bool useTLS = isDir(tlsDir);
   if (useTLS) {
-    DcmTLSTransportLayer::initializeOpenSSL();
-    DcmTLSTransportLayer *layer =
-        new DcmTLSTransportLayer(NET_REQUESTOR, nullptr, OFFalse);
-    bool ok = layer->setTLSProfile(TSP_Profile_BCP195).good() &&
-              layer->activateCipherSuites().good();
-    const std::string ca = tlsDir + "/ca.pem";
-    if (ok && pathExists(ca)) {
-      ok =
-          layer->addTrustedCertificateFile(ca.c_str(), DCF_Filetype_PEM).good();
-      layer->setCertificateVerification(DCV_requireCertificate);
-    } else
-      layer->setCertificateVerification(DCV_ignoreCertificate);
-    const std::string key = tlsDir + "/key.pem", cert = tlsDir + "/cert.pem";
-    if (ok && pathExists(key))
-      ok = layer->setPrivateKeyFile(key.c_str(), DCF_Filetype_PEM).good() &&
-           layer
-               ->setCertificateFile(cert.c_str(), DCF_Filetype_PEM,
-                                    TSP_Profile_BCP195)
-               .good() &&
-           layer->checkPrivateKeyMatchesCertificate();
-    if (!ok || ASC_setTransportLayer(net, layer, 1).bad()) {
-      logmsg("TLS setup failed for '" + tlsDir + "'");
+    std::string tlsErr;
+    DcmTransportLayer *layer =
+        makeTLSLayer(NET_REQUESTOR, tlsDir, /*requireOwnCert=*/false, tlsErr);
+    if (!layer || ASC_setTransportLayer(net, layer, 1).bad()) {
+      logmsg("TLS setup failed for '" + tlsDir +
+             "': " + (tlsErr.empty() ? "transport layer" : tlsErr));
       return 100; // config problem, not destination weather
     }
   }
