@@ -3,12 +3,19 @@
 # Run with:  clang-tidy -p build src/<prog>/main.cc
 # Auto-fix:  clang-tidy -p build --fix src/<prog>/main.cc
 # Needs build/compile_commands.json (CMAKE_EXPORT_COMPILE_COMMANDS=ON).
+#
+# bugprone-exception-escape is disabled: it flags every main() because a
+# std::string allocation can throw (bad_alloc/length_error). That trace is
+# only visible under libc++ (macOS), not libstdc++ (Linux), so it is both
+# platform-divergent and unactionable -- an uncaught throw in a CLI main
+# simply terminates with a non-zero exit, which is the intended failure.
 Checks: >
   clang-analyzer-*,
   bugprone-*,
   performance-*,
   portability-*,
   -bugprone-easily-swappable-parameters,
+  -bugprone-exception-escape,
   -bugprone-narrowing-conversions,
   -performance-inefficient-string-concatenation,
   -performance-enum-size,
