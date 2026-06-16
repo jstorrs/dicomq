@@ -46,12 +46,11 @@ bool linkBatchTree(const std::string &srcParent, const std::string &dstParent,
   std::error_code ec;
   for (const auto &entry : fs::directory_iterator(src, ec)) {
     const std::string name = entry.path().filename().string();
-    if (link((src + "/" + name).c_str(), (dst + "/" + name).c_str()) != 0 &&
-        errno != EEXIST) {
-      err = "cannot link '" + src + "/" + name + "' to '" + dst + "/" + name +
-            "': " + strerror(errno);
+    // route/ fan-out is same-filesystem, so a member can only end up
+    // Ok or Failed; an existing member with a different inode (a stale or
+    // wrong tree) fails here rather than being accepted as delivered.
+    if (linkOrSame(src + "/" + name, dst + "/" + name, err) != LinkOutcome::Ok)
       return false;
-    }
   }
   if (ec) {
     err = "cannot read batch '" + src + "': " + ec.message();

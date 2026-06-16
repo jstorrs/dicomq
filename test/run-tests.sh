@@ -50,6 +50,20 @@ wait_listen() { # wait_listen <port>
   return 1
 }
 
+# A listener we just started must come up, or every dependent network check
+# would fail in turn. Stop at the first one with a single clear diagnostic
+# rather than cascading dozens of confusing storescu failures — the usual
+# cause is loopback being unavailable (e.g. a sandbox) or a stale recv still
+# bound to the port.
+require_listen() { # require_listen <port>
+  wait_listen "$1" && return 0
+  echo "FAIL - listener never came up on port $1 (loopback unavailable, or a"
+  echo "       prior dicomq-recv still bound?); aborting network tests."
+  echo
+  echo "$PASS passed, $((FAIL + 1)) failed"
+  exit 1
+}
+
 nlinks() { ls -ld "$1" | awk '{print $2}'; }  # portable stat -c %h
 
 age_out() { touch -t 200001010000 "$@"; }     # older than any grace period
@@ -97,6 +111,7 @@ check "meta has the SOP instance UID"      meta_has "$DCM" '0002,0003.*1.2.276.0
 check "meta has the transfer syntax"       meta_has "$DCM" '0002,0010.*LittleEndianExplicit'
 check "queue/tmp left empty"               test -z "$(ls -A "$DICOMQ_SPOOL/queue/tmp")"
 check_not "inject refuses a non-DICOM file" "$BIN/dicomq-inject" -c X "$WORK/test.dump"
+check_not "inject refuses a reserved called AET" "$BIN/dicomq-inject" -c tmp "$WORK/test.dcm"
 
 # --- unit: pure common helpers --------------------------------------------
 if [ -x "$BIN/dicomq-unit-profile" ]; then
@@ -127,6 +142,13 @@ check "delivered object exists"            test -f "$MD/new/$ID.dcm"
 check "delivery is a hardlink"             test "$(nlinks "$MD/new/$ID.dcm")" = 2
 check "local is idempotent"                "$BIN/dicomq-local" "$ID" "$MD" "$SRC"
 check_not "local refuses a missing maildir" "$BIN/dicomq-local" "$ID" "$DICOMQ_SPOOL/aet/NOWHERE" "$SRC"
+# a different inode already at new/<id>.dcm is a collision, not a replayed
+# delivery: refuse so the source is not dequeued against the wrong object
+cp "$WORK/test.dcm" "$SRC/COLLIDE.dcm"
+echo "a different object" > "$MD/new/COLLIDE.dcm"
+check_not "local refuses a colliding wrong object" \
+      "$BIN/dicomq-local" COLLIDE "$MD" "$SRC"
+rm -f "$MD/new/COLLIDE.dcm" "$SRC/COLLIDE.dcm"
 # cross-filesystem fallback: /dev/shm is a different fs from /tmp
 if [ -d /dev/shm ] && [ "$(stat -fc %i /dev/shm 2>/dev/null)" != "$(stat -fc %i "$WORK" 2>/dev/null)" ]; then
   XMD=$(mktemp -d /dev/shm/dicomq-md.XXXXXX); mkdir -p "$XMD"/{tmp,new}
@@ -226,7 +248,7 @@ if command -v storescu >/dev/null; then
   mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
 
   "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
-  RECV=$!; wait_listen $PORT
+  RECV=$!; require_listen $PORT
   check "recv accepts a store for a known AET" \
         storescu -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
   wait $RECV
@@ -238,20 +260,20 @@ if command -v storescu >/dev/null; then
   check "meta has the SOP instance UID"      meta_has "$DCM" '0002,0003.*1.2.276.0.7230010.3.1.4.42.1'
 
   "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
-  RECV=$!; wait_listen $PORT
+  RECV=$!; require_listen $PORT
   check_not "recv rejects an unknown called AET" \
         storescu -aet MOD1 -aec NOSUCH localhost $PORT "$WORK/test.dcm"
   wait $RECV
 
   "$BIN/dicomq-recv" --listen $PORT --once -w 10000000 2>/dev/null &
-  RECV=$!; wait_listen $PORT
+  RECV=$!; require_listen $PORT
   check_not "recv refuses below the free-space watermark" \
         storescu -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
   wait $RECV
 
   if command -v echoscu >/dev/null; then
     "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
-    RECV=$!; wait_listen $PORT
+    RECV=$!; require_listen $PORT
     check "recv answers C-ECHO"              echoscu -aec ARCHIVE localhost $PORT
     wait $RECV
   fi
@@ -259,7 +281,7 @@ if command -v storescu >/dev/null; then
   # accept profile: ARCHIVE refuses implicit-only proposals
   printf 'ExplicitVRLittleEndian\n' > "$DICOMQ_SPOOL/aet/ARCHIVE/accept"
   "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
-  RECV=$!; wait_listen $PORT
+  RECV=$!; require_listen $PORT
   check_not "accept profile refuses excluded syntaxes" \
         storescu -xi -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
   wait $RECV
@@ -285,7 +307,7 @@ if command -v storescp >/dev/null; then
   "$BIN/dicomq-send" --once 2>/dev/null
   rm "$DICOMQ_SPOOL/route/PACS1/hold"
   storescp -od "$WORK/pacs1" $PORT 2>/dev/null & SCP=$!
-  wait_listen $PORT
+  require_listen $PORT
   "$BIN/dicomq-remote" PACS1 2>/dev/null
   check "remote delivers to the destination"  test -n "$(ls -A "$WORK/pacs1")"
   check "remote dequeues after delivery"      test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
@@ -308,7 +330,7 @@ if command -v storescp >/dev/null; then
   printf 'ImplicitVRLittleEndian\ntranscode: never\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
   rm -f "$DICOMQ_SPOOL/route/PACS1/status"
   storescp -od "$WORK/pacs1" $PORT 2>/dev/null & SCP=$!
-  wait_listen $PORT
+  require_listen $PORT
   RERR=$("$BIN/dicomq-remote" PACS1 2>&1)
   check "transcode never demotes to retry/1"  test -f "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
   check "demotion left todo empty"            test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
@@ -341,7 +363,7 @@ if command -v storescp >/dev/null; then
   rm "$DICOMQ_SPOOL/route/PACS1/hold"
   rm -f "$WORK/pacs1"/*
   storescp +xa -od "$WORK/pacs1" $PORT 2>/dev/null & SCP=$!
-  wait_listen $PORT
+  require_listen $PORT
   "$BIN/dicomq-remote" PACS1 2>/dev/null
   check "lossless compressing transcode delivers" test -n "$(ls -A "$WORK/pacs1")"
   RECEIVED=$(ls "$WORK/pacs1" | head -1)
@@ -389,14 +411,14 @@ if command -v openssl >/dev/null && storescu --help 2>&1 | grep -q anonymous-tls
   cp "$CERTS/srv.key" "$DICOMQ_SPOOL/tls/key.pem"
   cp "$CERTS/srv.pem" "$DICOMQ_SPOOL/tls/cert.pem"
   "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
-  wait_listen $TPORT
+  require_listen $TPORT
   check "recv accepts a TLS store" \
         storescu +tla +cf "$CERTS/ca.pem" -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
   wait $RECV
   check "TLS store is queued" test -n "$(find "$DICOMQ_SPOOL/queue/todo" -name '*.dcm')"
 
   "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
-  wait_listen $TPORT
+  require_listen $TPORT
   check_not "plaintext client cannot store to a TLS listener" \
         storescu -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
   kill $RECV 2>/dev/null; wait $RECV 2>/dev/null
@@ -413,7 +435,7 @@ if command -v openssl >/dev/null && storescu --help 2>&1 | grep -q anonymous-tls
   "$BIN/dicomq-send" --once 2>/dev/null
   rm "$DICOMQ_SPOOL/route/PACS1/hold"
   storescp +tls "$CERTS/srv.key" "$CERTS/srv.pem" -ic -od "$WORK/tlspacs" $TPORT 2>/dev/null & SCP=$!
-  wait_listen $TPORT
+  require_listen $TPORT
   "$BIN/dicomq-remote" PACS1 2>/dev/null
   check "remote delivers over TLS"            test -n "$(ls -A "$WORK/tlspacs")"
   check "TLS route queue drained"             test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
@@ -433,7 +455,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
 
   storescp -od "$WORK/endpacs" $PPORT 2>/dev/null & SCP=$!
   "$BIN/dicomq-recv" --listen $RPORT --once 2>/dev/null & RECV=$!
-  wait_listen $RPORT; wait_listen $PPORT
+  require_listen $RPORT; require_listen $PPORT
   check "e2e: modality stores to dicomq-recv" \
         storescu -aet CT99 -aec ROUTER localhost $RPORT "$WORK/test.dcm"
   wait $RECV
@@ -466,7 +488,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
 
   # both objects of one study arrive over a single association
   "$BIN/dicomq-recv" --listen $SRPORT --once 2>/dev/null & RECV=$!
-  wait_listen $SRPORT
+  require_listen $SRPORT
   check "study-mode: recv accepts the study" \
         storescu -aet MOD1 -aec STUDYR localhost $SRPORT "$WORK/test.dcm" "$WORK/test2.dcm"
   wait $RECV
@@ -501,7 +523,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
 
   # deliver the held batch: one association carries the whole study
   storescp -od "$WORK/studypacs" $SPPORT 2>/dev/null & SCP=$!
-  wait_listen $SPPORT
+  require_listen $SPPORT
   rm "$DICOMQ_SPOOL/route/PACS1/hold"
   "$BIN/dicomq-remote" PACS1 2>/dev/null
   check "study-mode: remote delivers the whole study" \
@@ -513,7 +535,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   # a straggler for the same study starts a fresh batch — no name collision
   # with the already-shipped one (sealed batches are timestamped, not UIDs)
   "$BIN/dicomq-recv" --listen $SRPORT --once 2>/dev/null & RECV=$!
-  wait_listen $SRPORT
+  require_listen $SRPORT
   storescu -aet MOD1 -aec STUDYR localhost $SRPORT "$WORK/test.dcm" >/dev/null 2>&1
   wait $RECV
   check "study-mode: a straggler starts a new accumulation" \
@@ -531,7 +553,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   printf 'study 3600\n' > "$DICOMQ_SPOOL/aet/STUDYR/group"
   printf 'ImplicitVRLittleEndian\ntranscode: never\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
   "$BIN/dicomq-recv" --listen $SRPORT --once 2>/dev/null & RECV=$!
-  wait_listen $SRPORT
+  require_listen $SRPORT
   storescu -aet MOD1 -aec STUDYR localhost $SRPORT "$WORK/test.dcm" "$WORK/test2.dcm" >/dev/null 2>&1
   wait $RECV
   age_out "$DICOMQ_SPOOL/accum/STUDYR/$SUID"
@@ -539,7 +561,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   "$BIN/dicomq-send" --once 2>/dev/null
   rm "$DICOMQ_SPOOL/route/PACS1/hold"
   storescp -od "$WORK/studypacs2" $SPPORT 2>/dev/null & SCP=$!
-  wait_listen $SPPORT
+  require_listen $SPPORT
   "$BIN/dicomq-remote" PACS1 2>/dev/null
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
   DBATCH=$(ls "$DICOMQ_SPOOL/route/PACS1/retry/1" 2>/dev/null | head -1)
@@ -574,7 +596,7 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   grep -v '0020,000d' "$WORK/test.dump" > "$DENO"
   dump2dcm +te "$DENO" "$WORK/nostudy.dcm" 2>/dev/null
   "$BIN/dicomq-recv" --listen $SRPORT --once 2>/dev/null & RECV=$!
-  wait_listen $SRPORT
+  require_listen $SRPORT
   check_not "study-mode: object with no grouping UID is refused" \
         storescu -aet MOD1 -aec STUDYR localhost $SRPORT "$WORK/nostudy.dcm"
   kill $RECV 2>/dev/null; wait $RECV 2>/dev/null

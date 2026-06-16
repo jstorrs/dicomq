@@ -39,11 +39,13 @@ using namespace dicomq;
 static bool deliverFile(const std::string &src, const std::string &dir,
                         const std::string &name, std::string &err) {
   const std::string dst = dir + "/new/" + name;
-  if (link(src.c_str(), dst.c_str()) == 0 || errno == EEXIST)
+  switch (linkOrSame(src, dst, err)) {
+  case LinkOutcome::Ok:
     return fsyncPath(dir + "/new", err);
-  if (errno != EXDEV) {
-    err = "cannot link '" + src + "' to '" + dst + "': " + strerror(errno);
+  case LinkOutcome::Failed:
     return false;
+  case LinkOutcome::CrossDevice:
+    break; // a cross-filesystem maildir: copy through its own tmp/
   }
   const std::string tmp = dir + "/tmp/" + name;
   if (!copyFile(src, tmp, err))
@@ -75,14 +77,15 @@ static bool deliverBatch(const std::string &srcBatch, const std::string &dir,
   for (const auto &objid : listIds(srcBatch)) {
     const std::string src = dcmPath(srcBatch, objid);
     const std::string tgt = dcmPath(stage, objid);
-    if (link(src.c_str(), tgt.c_str()) == 0 || errno == EEXIST)
+    switch (linkOrSame(src, tgt, err)) {
+    case LinkOutcome::Ok:
       continue;
-    if (errno != EXDEV) {
-      err = "cannot link '" + src + "' to '" + tgt + "': " + strerror(errno);
+    case LinkOutcome::Failed:
       return false;
+    case LinkOutcome::CrossDevice:
+      if (!copyFile(src, tgt, err)) // cross-filesystem maildir
+        return false;
     }
-    if (!copyFile(src, tgt, err)) // cross-filesystem maildir
-      return false;
   }
   if (!fsyncPath(stage, err))
     return false;

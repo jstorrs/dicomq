@@ -156,11 +156,25 @@ bool fsyncPath(const std::string &path, std::string &err);
 bool commitFile(const std::string &tmpPath, const std::string &finalPath,
                 std::string &err);
 
-// link(2) from -> to, treating EEXIST as success only when `to` is
-// already the same inode as `from`: ids are unique, so "already linked"
-// means a previous (possibly crashed) pass already did this work. An
-// existing `to` with a different inode is an id collision or stale file
-// and fails. Fsyncs the containing directory on success.
+// Outcome of linkOrSame: the link now exists (freshly made, or `to` was
+// already the same inode as `from`); it would cross filesystems (the
+// caller may copy instead); or it failed. err is set on both CrossDevice
+// and Failed, so a caller that cannot copy can return false straight away.
+enum class LinkOutcome { Ok, CrossDevice, Failed };
+
+// link(2) from -> to with idempotent same-inode semantics, WITHOUT any
+// fsync — callers that link many members fsync the directory once at the
+// end. EEXIST is success only when `to` is already the same inode as
+// `from`: ids are unique, so "already linked" means a previous (possibly
+// crashed) pass did this work, while a different inode is an id collision
+// or stale file and yields Failed. EXDEV yields CrossDevice so a caller
+// spanning filesystems can fall back to a copy.
+LinkOutcome linkOrSame(const std::string &from, const std::string &to,
+                       std::string &err);
+
+// linkOrSame plus an fsync of the destination directory on success.
+// Cross-device links are an error here (route/ fan-out stays on one
+// filesystem), reported with the message linkOrSame already recorded.
 bool linkIdempotent(const std::string &from, const std::string &to,
                     std::string &err);
 

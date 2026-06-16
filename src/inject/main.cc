@@ -62,6 +62,18 @@ int main(int argc, char **argv) {
   if (calledAET.empty() || optind >= argc)
     return usage();
 
+  // same gate dicomq-recv applies to an inbound called AET (recv/main.cc):
+  // a title that sanitizes to a reserved queue name must not become a
+  // queue/todo/<name> destination.
+  const std::string dest = sanitizeAET(calledAET);
+  if (isReservedName(dest)) {
+    std::fprintf(stderr,
+                 "dicomq-inject: called AET '%s' resolves to reserved name "
+                 "'%s'\n",
+                 calledAET.c_str(), dest.c_str());
+    return 100;
+  }
+
   const Spool sp(spoolArg);
   std::string err;
 
@@ -97,7 +109,7 @@ int main(int argc, char **argv) {
                              calledAET.c_str());
 
     const std::string id = generateId();
-    const std::string aetDir = sp.queueTodoAET(sanitizeAET(calledAET));
+    const std::string aetDir = sp.queueTodoAET(dest);
     const std::string tmpDcm = dcmPath(sp.queueTmp(), id);
 
     // the same commit protocol as dicomq-recv: save into tmp, then one
