@@ -1,24 +1,33 @@
-// Unit tests for filesystem-helper edge cases in common/spool.cc and the
+// Unit tests for pure helpers in common/spool.cc + common/message.cc and the
 // "missing optional config" parsing in common/profile.cc — cheap to cover
 // here and awkward to reach from the network integration suite:
 //   * mkdirIfMissing on an existing non-directory must fail
 //   * linkIdempotent must accept a replay (same inode) but reject a
 //     pre-existing destination with a different inode
+//   * copyFile is all-or-nothing (no partial dst on a write error)
+//   * freeBytes reports -1 for an unstattable path (the watermark's fail-closed
+//     sentinel), sanitizeAET/isReservedName enforce the path-name rules,
+//     id<->time and ISO-time round-trip, and retryBackoff/messageDue encode the
+//     retry schedule — all subtle, routing/security-relevant, and silent if
+//     they regress
 //   * the profile loaders must treat a genuinely absent file as the
 //     compiled-in default, but a required config (remote) as an error
 //
 // Exit 0 = all asserts held; 1 = a failure was printed.
 
+#include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
 
 #include <csignal>
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <string>
 
 #include <sys/resource.h>
 #include <unistd.h>
+#include <utime.h>
 
 using namespace dicomq;
 
@@ -153,6 +162,62 @@ int main() {
   expect(freeBytes(root) >= 0, "freeBytes of a real directory is non-negative");
   expect(freeBytes(root + "/no-such-path") == -1,
          "freeBytes of a missing path is the -1 'unknown' sentinel");
+
+  // --- sanitizeAET: trimming, allowed charset, no path escape ---------
+  expect(sanitizeAET(" a.b ") == "a_b", "sanitizeAET trims and replaces '.'");
+  expect(sanitizeAET("") == "_", "empty AET sanitizes to '_'");
+  expect(sanitizeAET("   ") == "_", "all-whitespace AET sanitizes to '_'");
+  expect(sanitizeAET("PACS-1") == "PACS-1", "alphanumerics and '-' are kept");
+  expect(sanitizeAET("a/b") == "a_b", "'/' is replaced");
+  expect(sanitizeAET("../x").find('/') == std::string::npos,
+         "no '/' survives sanitize (no path escape)");
+
+  // --- isReservedName: the queue's own dir names, case-insensitive -----
+  expect(isReservedName("tmp") && isReservedName("TMP") &&
+             isReservedName("New") && isReservedName("todo"),
+         "tmp/new/todo are reserved, case-insensitively");
+  expect(!isReservedName("ARCHIVE") && !isReservedName("temp"),
+         "ordinary names are not reserved");
+
+  // --- id <-> time, and ISO time round-trip ---------------------------
+  {
+    const time_t now = time(nullptr);
+    const time_t t = idTime(generateId());
+    expect(t != 0 && t >= now - 2 && t <= now + 2,
+           "idTime of a fresh id is within seconds of now");
+    expect(idTime("not-an-id") == 0, "idTime of a non-id is 0");
+    expect(parseIsoTime(isoTime(now)) == now, "parseIsoTime inverts isoTime");
+    expect(parseIsoTime("garbage") == 0, "parseIsoTime rejects garbage");
+  }
+
+  // --- retryBackoff: quadratic growth to a 6-hour cap -----------------
+  expect(retryBackoff(0) == 0, "rung 0 (todo) is always due");
+  expect(retryBackoff(-3) == 0, "a non-positive rung backoff is 0");
+  expect(retryBackoff(1) == 420, "rung 1 backoff is ~7 minutes");
+  expect(retryBackoff(2) == 1680, "rung 2 backoff is quadratic (420*2^2)");
+  expect(retryBackoff(8) == 21600 && retryBackoff(8) > retryBackoff(7),
+         "backoff grows then caps at 6 hours");
+
+  // --- messageDue: rung 0 always due; rung k gated on mtime+backoff ----
+  {
+    const std::string mdDir = root + "/md";
+    expect(mkdirIfMissing(mdDir, err), "messageDue fixture dir");
+    const std::string mid = "20200101000000000.1.000000";
+    writeFile(dcmPath(mdDir, mid), "x");
+    const time_t now = time(nullptr);
+    expect(messageDue(mdDir, mid, 0, now), "rung 0 is always due");
+    struct utimbuf fresh{now, now};
+    utime(dcmPath(mdDir, mid).c_str(), &fresh);
+    expect(!messageDue(mdDir, mid, 1, now),
+           "a just-landed retry/1 message is not yet due");
+    struct utimbuf aged{now - 100000, now - 100000};
+    utime(dcmPath(mdDir, mid).c_str(), &aged);
+    expect(messageDue(mdDir, mid, 1, now),
+           "a retry/1 message past its backoff is due");
+    unlink(dcmPath(mdDir, mid).c_str());
+    expect(!messageDue(mdDir, mid, 1, now), "a vanished message is not due");
+    rmdir(mdDir.c_str());
+  }
 
   // --- missing optional config vs required config ---------------------
   {
