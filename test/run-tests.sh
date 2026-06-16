@@ -220,6 +220,24 @@ check "unknown called AET is failed"        test -f "$DICOMQ_SPOOL/failed/$ID.dc
 check "unsatisfiable instruction defers in place" \
       test -f "$DICOMQ_SPOOL/queue/todo/DEFER/$ID2.dcm"
 
+# the global failed/ is dicomq's to create on first use (DESIGN.md "Spool
+# layout"), like every per-destination sink — a spool skeleton lacking it must
+# not strand send (re-failing every scan) or error out ctl.
+new_spool
+rm -rf "$DICOMQ_SPOOL/failed"
+ID=$("$BIN/dicomq-inject" -c UNKNOWNAET "$WORK/test.dcm")
+"$BIN/dicomq-send" --once 2>/dev/null
+check "send creates a missing failed/ to fail an unknown AET" \
+      test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+
+new_spool
+mkdir -p "$DICOMQ_SPOOL/aet/KAET"/{tmp,new}
+ID=$("$BIN/dicomq-inject" -c KAET "$WORK/test.dcm")
+rm -rf "$DICOMQ_SPOOL/failed"
+check "ctl fail creates a missing failed/" "$BIN/dicomq-ctl" fail "$ID"
+check "ctl fail landed the message in the recreated failed/" \
+      test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+
 # --- send: daemon mode reacts to new work via inotify ----------------------
 # inotify is Linux-only; elsewhere (e.g. macOS) dicomq-send falls back to the
 # periodic scan, so sub-scan-interval delivery is not expected. Skip there.

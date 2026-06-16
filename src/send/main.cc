@@ -253,7 +253,11 @@ static void processMessage(const std::string &aet, const Message &msg) {
   // this is a defensive guard for a hand-placed object
   if (!isDir(aetDir)) {
     logmsg("failing " + id + ": unknown called AET '" + aet + "'");
-    if (!moveMessage(srcDir, sp.failedDir(), id, err, batch))
+    // failed/ is dicomq's to create on first use (DESIGN.md "Spool layout"),
+    // like every per-destination sink — without this an absent failed/ makes
+    // the move ENOENT and the message re-fails every scan.
+    if (!mkdirIfMissing(sp.failedDir(), err) ||
+        !moveMessage(srcDir, sp.failedDir(), id, err, batch))
       logmsg("cannot fail " + id + ": " + err);
     return;
   }

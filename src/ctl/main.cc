@@ -208,7 +208,10 @@ int main(int argc, char **argv) {
     std::string reason = "failed by operator";
     if (argc - optind > 2)
       reason = argv[optind + 2];
-    if (!moveMessage(fromDir, sp.failedDir(), id, err, isBatch)) {
+    // create failed/ on first use, like the per-destination sinks (DESIGN.md
+    // "Spool layout" lists the global failed/ as dicomq's to write)
+    if (!mkdirIfMissing(sp.failedDir(), err) ||
+        !moveMessage(fromDir, sp.failedDir(), id, err, isBatch)) {
       std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
     }
