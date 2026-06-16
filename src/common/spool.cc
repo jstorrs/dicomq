@@ -220,11 +220,20 @@ std::vector<std::pair<std::string, int>>
 routeQueueDirs(const Spool &sp, const std::string &dest) {
   std::vector<std::pair<std::string, int>> dirs;
   dirs.emplace_back(sp.routeTodo(dest), 0); // todo/ is rung 0: always due
+  // listSubdirs sorts lexically, which would walk retry/10 before retry/2;
+  // the contract is ascending rung order, so collect the rung numbers and
+  // sort them numerically. Accept only canonical positive integers — the
+  // rung path is rebuilt from the number, so a non-canonical name ("02") or
+  // a malformed one ("2x", "tmp") is ignored rather than mis-targeted.
+  std::vector<int> rungs;
   for (const auto &lvl : listSubdirs(sp.routeRetryRoot(dest))) {
     const int k = atoi(lvl.c_str());
-    if (k >= 1)
-      dirs.emplace_back(sp.routeRetry(dest, k), k);
+    if (k >= 1 && std::to_string(k) == lvl)
+      rungs.push_back(k);
   }
+  std::sort(rungs.begin(), rungs.end());
+  for (const int k : rungs)
+    dirs.emplace_back(sp.routeRetry(dest, k), k);
   return dirs;
 }
 

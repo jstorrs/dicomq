@@ -33,13 +33,21 @@ meta_has() { # meta_has <file> <pattern>
 }
 
 listening() { # listening <port> — passive check, no connection made
-  if command -v ss >/dev/null 2>&1; then
-    ss -tln 2>/dev/null | grep -q ":$1 "
-  elif command -v lsof >/dev/null 2>&1; then        # macOS/BSD
-    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
-  else
-    netstat -an 2>/dev/null | grep LISTEN | grep -q "[.:]$1 "
+  # Try each available probe and fall through when the tool itself fails
+  # rather than reports "not listening" — e.g. `ss` exits non-zero with
+  # "Cannot open netlink socket" in a restricted sandbox, where lsof or
+  # netstat still work. Only conclude not-listening once all have been tried.
+  local out
+  if command -v ss >/dev/null 2>&1 && out=$(ss -tln 2>/dev/null); then
+    grep -q ":$1 " <<<"$out" && return 0
   fi
+  if command -v lsof >/dev/null 2>&1; then          # macOS/BSD
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -an 2>/dev/null | grep LISTEN | grep -q "[.:]$1 " && return 0
+  fi
+  return 1
 }
 
 wait_listen() { # wait_listen <port>

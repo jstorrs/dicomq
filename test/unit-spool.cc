@@ -78,6 +78,28 @@ int main() {
   expect(!linkIdempotent(src, other, err) && !err.empty(),
          "rejects an existing destination with a different inode");
 
+  // --- routeQueueDirs walks rungs in ascending numeric order ----------
+  {
+    const Spool sp(root);
+    const std::string dest = "PACS1";
+    expect(mkdirIfMissing(sp.routeRoot(), err) &&
+               mkdirIfMissing(sp.routeDir(dest), err) &&
+               mkdirIfMissing(sp.routeRetryRoot(dest), err),
+           "route skeleton for the rung test");
+    // rungs out of lexical order (10 < 2 as strings), plus noise that must
+    // be ignored: a non-canonical "02" and a malformed "2x"
+    for (const char *r : {"1", "2", "10", "02", "2x"})
+      mkdirIfMissing(sp.routeRetryRoot(dest) + "/" + r, err);
+
+    const auto dirs = routeQueueDirs(sp, dest);
+    // expected: todo(0), retry/1, retry/2, retry/10 — "02"/"2x" dropped
+    const bool ok = dirs.size() == 4 && dirs[0].second == 0 &&
+                    dirs[1].second == 1 && dirs[2].second == 2 &&
+                    dirs[3].second == 10 &&
+                    dirs[3].first == sp.routeRetry(dest, 10);
+    expect(ok, "routeQueueDirs sorts rungs numerically, dropping malformed");
+  }
+
   // --- missing optional config vs required config ---------------------
   {
     const std::string absent = root + "/does-not-exist";
