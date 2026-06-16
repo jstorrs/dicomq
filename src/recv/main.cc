@@ -40,6 +40,7 @@
 #include "dcmtk/dcmnet/dimse.h"
 #include "dcmtk/dcmnet/diutil.h"
 
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -342,6 +343,11 @@ static int handleAssociation(T_ASC_Association *assoc) {
 }
 
 int main(int argc, char **argv) {
+  // A peer that resets the connection between DCMTK's poll and its write(2)
+  // would otherwise deliver SIGPIPE and terminate us by signal; ignore it so
+  // the write returns EPIPE and the existing error paths handle it cleanly.
+  signal(SIGPIPE, SIG_IGN);
+
   std::string spoolArg;
   long listenPort = 0;
   bool once = false, useTLS = false;

@@ -24,6 +24,7 @@
 
 #include <cerrno>
 #include <climits>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -364,6 +365,10 @@ static void maybeTrigger(const std::string &dest) {
 }
 
 int main(int argc, char **argv) {
+  // ignore SIGPIPE so a write to a closed stdio/agent pipe returns EPIPE
+  // rather than killing the one long-running process by signal
+  signal(SIGPIPE, SIG_IGN);
+
   std::string spoolArg;
   long interval = 10;
   bool once = false;

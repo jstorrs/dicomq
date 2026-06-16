@@ -61,6 +61,7 @@
 #include "dcmtk/dcmnet/dimse.h"
 #include "dcmtk/dcmnet/diutil.h"
 
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -487,6 +488,10 @@ deliverMessage(T_ASC_Association *assoc, const WorkItem &item,
 }
 
 int main(int argc, char **argv) {
+  // ignore SIGPIPE: a peer reset mid-C-STORE returns EPIPE on write rather
+  // than killing us by signal, so the failure is handled as destination state
+  signal(SIGPIPE, SIG_IGN);
+
   std::string spoolArg;
   int opt;
   while ((opt = getopt(argc, argv, "s:")) != -1) {
