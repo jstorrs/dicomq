@@ -438,6 +438,15 @@ if command -v storescp >/dev/null; then
   check "transcode never demotes to retry/1"  test -f "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
   check "demotion left todo empty"            test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
   check "demotion names the syntax problem"   grep -q "transcode is 'never'" <<<"$RERR"
+  # the just-demoted object's mtime is ~now, so retry/1's backoff (~7 min) has
+  # NOT elapsed: a second remote run must skip it. Every other retry test
+  # age_out's first, so this is the only check the backoff gate actually works
+  # — a re-attempt at the top rung would wrongly fail the message.
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "a not-yet-due retry object is skipped" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
+  check "a not-yet-due retry object is not re-attempted (no early fail)" \
+        test ! -e "$DICOMQ_SPOOL/route/PACS1/failed/$ID.dcm"
   # rejection at the top rung (no retry/2 dir) fails the message rather
   # than creating retry/2 — the ladder depth is the directories present
   age_out "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
@@ -492,6 +501,68 @@ if command -v storescp >/dev/null; then
   check "lossy transcode delivers under 'as-needed'" test -n "$(ls -A "$WORK/pacs1")"
   RECEIVED=$(ls "$WORK/pacs1" | head -1)
   check "delivered object is JPEG baseline"   sh -c "dcmdump +f '$WORK/pacs1/$RECEIVED' 2>/dev/null | grep -q 'JPEGBaseline'"
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+
+  # an unreadable queued object is quarantined to corrupt/, not retried as if
+  # it were deliverable (gatherDueWork reads each object's file meta first)
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/dest/PACS1" "$DICOMQ_SPOOL/route/PACS1/todo"
+  printf "host: localhost\nport: $PORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
+  GARBAGE=20200101000000000.9.000000
+  echo "not a dicom file" > "$DICOMQ_SPOOL/route/PACS1/todo/$GARBAGE.dcm"
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  check "an unreadable queued object is quarantined to corrupt/" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/corrupt/$GARBAGE.dcm"
+  check "quarantine empties todo"             test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+
+  # demotion COPIES to a private inode (its mtime is the backoff clock) so a
+  # co-queued hardlink at another destination keeps an independent clock. Fan
+  # out one object to two destinations, reject at PACS1 (hold PACS2), and check
+  # the demoted copy does NOT share PACS2's still-queued inode (nlinks stays 1).
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/FAN2"/{tmp,new} \
+           "$DICOMQ_SPOOL/dest/PACS1" "$DICOMQ_SPOOL/route/PACS1/todo" \
+           "$DICOMQ_SPOOL/route/PACS1/retry/1" \
+           "$DICOMQ_SPOOL/dest/PACS2" "$DICOMQ_SPOOL/route/PACS2/todo"
+  printf "host: localhost\nport: $PORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
+  printf "host: localhost\nport: $PORT\naet: PACS2\n" > "$DICOMQ_SPOOL/dest/PACS2/remote"
+  printf 'ImplicitVRLittleEndian\ntranscode: never\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  printf 'forward PACS1\nforward PACS2\n' > "$DICOMQ_SPOOL/aet/FAN2/deliver"
+  touch "$DICOMQ_SPOOL/route/PACS1/hold" "$DICOMQ_SPOOL/route/PACS2/hold"
+  ID=$("$BIN/dicomq-inject" -c FAN2 "$WORK/test.dcm")
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"   # leave PACS2 held so its copy stays put
+  check "fan-out shares one inode across destinations" \
+        test "$(nlinks "$DICOMQ_SPOOL/route/PACS2/todo/$ID.dcm")" = 2
+  storescp -od "$WORK/pacs1" $PORT 2>/dev/null & SCP=$!
+  require_listen $PORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "rejected fan-out object demotes to PACS1 retry/1" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
+  check "demotion copies to a private inode (not sharing PACS2's)" \
+        test "$(nlinks "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm")" = 1
+  check "the co-queued PACS2 copy is undisturbed" \
+        test -f "$DICOMQ_SPOOL/route/PACS2/todo/$ID.dcm"
+
+  # dicomq-send honours the dead-site backoff: a status with a future
+  # next-attempt-after suppresses triggering dicomq-remote even with due work;
+  # once it elapses, delivery resumes.
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/BO"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1" \
+           "$DICOMQ_SPOOL/route/PACS1/todo" "$WORK/bopacs"
+  printf "host: localhost\nport: $PORT\naet: PACS1\n" > "$DICOMQ_SPOOL/dest/PACS1/remote"
+  printf 'forward PACS1\n' > "$DICOMQ_SPOOL/aet/BO/deliver"
+  ID=$("$BIN/dicomq-inject" -c BO "$WORK/test.dcm")
+  printf 'failures: 1\nnext-attempt-after: 2999-01-01T00:00:00Z\n' > "$DICOMQ_SPOOL/route/PACS1/status"
+  storescp -od "$WORK/bopacs" $PORT 2>/dev/null & SCP=$!
+  require_listen $PORT
+  "$BIN/dicomq-send" --once 2>/dev/null
+  check "send routes despite the backoff"     test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
+  check "send does not deliver while backed off" test -z "$(ls -A "$WORK/bopacs")"
+  printf 'failures: 1\nnext-attempt-after: 2000-01-01T00:00:00Z\n' > "$DICOMQ_SPOOL/route/PACS1/status"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  check "send delivers once the backoff has elapsed" test -n "$(ls -A "$WORK/bopacs")"
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
 else
   echo "skip - remote tests (no storescp on PATH)"
