@@ -19,14 +19,6 @@ std::string KeyValueFile::get(const std::string &key) const {
   return "";
 }
 
-size_t KeyValueFile::count(const std::string &key) const {
-  size_t n = 0;
-  for (const auto &f : fields)
-    if (f.first == key)
-      n++;
-  return n;
-}
-
 void KeyValueFile::add(const std::string &key, const std::string &value) {
   fields.emplace_back(key, value);
 }

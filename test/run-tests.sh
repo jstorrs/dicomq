@@ -24,7 +24,7 @@ check_not() {
 
 new_spool() {
   rm -rf "$DICOMQ_SPOOL"
-  mkdir -p "$DICOMQ_SPOOL"/{queue/{tmp,todo},route,aet,dest,failed,hold,corrupt}
+  mkdir -p "$DICOMQ_SPOOL"/{queue/{tmp,todo},route,aet,dest,failed,hold}
 }
 
 # the meta header carries every routing field now; assert one of them

@@ -23,7 +23,7 @@ dicomq never creates directories — creating them *is* configuration:
 
 ```sh
 SPOOL=/var/spool/dicomq
-mkdir -p $SPOOL/{queue/{tmp,todo},route,aet,dest,failed,hold,corrupt}
+mkdir -p $SPOOL/{queue/{tmp,todo},route,aet,dest,failed,hold}
 ```
 
 Every program takes `-s <spool>` or honours `$DICOMQ_SPOOL`

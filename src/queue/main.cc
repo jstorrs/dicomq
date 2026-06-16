@@ -149,7 +149,7 @@ static void destSummary(const std::string &dest) {
              status.get("last-failure") + "] ";
   if (!rungs.empty())
     extra += "[retry" + rungs + "] ";
-  // per-destination terminal sinks (objects, like the global failed/corrupt
+  // per-destination terminal sinks (object counts, like the global hold/failed
   // lines below); shown only when non-empty to keep idle queues quiet
   if (const size_t n = countDcm(sp.routeComplete(dest)))
     extra += "[complete " + std::to_string(n) + "] ";
@@ -190,7 +190,6 @@ int main(int argc, char **argv) {
   for (const auto &dest : listSubdirs(sp.routeRoot()))
     destSummary(dest);
   std::printf("%-20s %4zu messages\n", "hold", countDcm(sp.holdDir()));
-  std::printf("%-20s %4zu messages\n", "corrupt", countDcm(sp.corruptDir()));
   std::printf("%-20s %4zu messages\n", "failed", countDcm(sp.failedDir()));
   return 0;
 }

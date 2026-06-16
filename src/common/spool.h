@@ -59,9 +59,9 @@ struct Spool {
     return routeDir(d) + "/status";
   }
   // Per-destination terminal sinks for a forwarding message. They are
-  // per-destination (not the global failed/, corrupt/) so a fan-out object
-  // that ends differently at two destinations never aliases in one shared
-  // sink — same-inode hardlinks rename to a no-op, leaving the source stuck.
+  // per-destination (not a single shared sink) so a fan-out object that ends
+  // differently at two destinations never aliases in one shared sink —
+  // same-inode hardlinks rename to a no-op, leaving the source stuck.
   // complete/ is auto-reaped by dicomq-clean; failed/ and corrupt/ are
   // operator-managed. dicomq creates each on first use.
   std::string routeComplete(const std::string &d) const {
@@ -87,7 +87,6 @@ struct Spool {
   // forwarding failures live in routeFailed()/routeCorrupt() instead.
   std::string failedDir() const { return root + "/failed"; }
   std::string holdDir() const { return root + "/hold"; }
-  std::string corruptDir() const { return root + "/corrupt"; }
   // Staging area for discarding a superseded batch: it is renamed here
   // whole (one atomic step that dequeues it) and then deleted. dicomq's to
   // create and reap (dicomq-clean); no queue walker scans it.
@@ -122,12 +121,6 @@ time_t idTime(const std::string &id);
 std::string isoTime(time_t t);
 time_t parseIsoTime(const std::string &s);
 
-// Current UTC time to millisecond precision,
-// "2026-06-12T17:42:31.313Z" — for the informational "received" stamp,
-// matching the millisecond resolution of a message id. Operational
-// timestamps that are parsed back (status, attempts) use isoTime.
-std::string isoTimeMillis();
-
 // Free bytes on the filesystem holding path, or -1.
 long long freeBytes(const std::string &path);
 
@@ -136,13 +129,10 @@ long long freeBytes(const std::string &path);
 bool pathExists(const std::string &path);
 bool isDir(const std::string &path);
 
-// qmail's quadratic retry schedule: backoffSeconds grows as
-// 2*sqrt(seconds*BASE), capped at 6 hours. retryBackoff(level) is the
-// wait a message must sit at retry rung `level` before it is due again
-// — the ladder keys the same quadratic cadence on the rung number, so
-// successive rungs come due ~BASE*level^2 seconds apart. A message in
-// todo/ (level 0) is always due.
-long backoffSeconds(long seconds);
+// qmail's quadratic retry schedule. retryBackoff(level) is the wait a
+// message must sit at retry rung `level` before it is due again: the wait
+// grows quadratically with the rung number (~BASE*level^2 seconds), capped
+// at 6 hours. A message in todo/ (level 0) is always due.
 long retryBackoff(int level);
 
 // Message id: "<YYYYMMDDHHMMSSMMM>.<pid>.<counter>" (UTC). Unique per

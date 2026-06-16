@@ -108,7 +108,6 @@ failed/                # pre-routing failures only: dicomq-send could not
                        # route (unknown called AET / no instruction), and
                        # dicomq-ctl fail. Forwarding failures live per-DEST.
 hold/                  # operator-frozen messages, origin mirrored as a subpath
-corrupt/               # legacy/global quarantine (forwarding now per-DEST)
 trash/                 # batches renamed here to be deleted; reaped by clean
 ```
 
@@ -127,9 +126,8 @@ entries — creating them **is** configuration, done by the operator (the
 retry-ladder depth is exactly which `retry/<k>/` dirs exist). The per-AET
 `queue/todo/<AET>/` leaves, the per-destination `complete/`, `failed/`, and
 `corrupt/` sinks (created on first use), the `accum/<AET>/<UID>/`
-accumulation directories, the global `failed/`, `hold/`, `corrupt/`,
-`trash/`, route `status` files, and the contents of maildirs are dicomq's
-to write.
+accumulation directories, the global `failed/`, `hold/`, `trash/`, route
+`status` files, and the contents of maildirs are dicomq's to write.
 
 Directory names under `aet/` (and `queue/todo/`) are *sanitized* AE
 titles: trimmed, alphanumerics and `-` kept, everything else replaced by

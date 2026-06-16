@@ -23,9 +23,6 @@ struct KeyValueFile {
   // First value for key, or "" if absent.
   std::string get(const std::string &key) const;
 
-  // Number of values recorded for key.
-  size_t count(const std::string &key) const;
-
   void add(const std::string &key, const std::string &value);
 
   // Parse path. Unknown keys are preserved; malformed lines are an

@@ -12,14 +12,14 @@
 // The message — a single <id>.dcm, or a sealed study/series batch
 // directory <id>/ — is found by searching queue/todo/*/, every
 // route/<DEST>/{todo,retry/*,complete,failed,corrupt}/, hold/, and the
-// global corrupt/ and failed/ (pre-routing failures). Every move
-// is one atomic rename (of a file or a directory) and is idempotent via
-// unique ids. hold remembers a message's origin by MIRRORING its source
-// path under hold/ (hold/route/PACS1/retry/2/<id>.dcm or .../<id>/), so
-// release recovers the origin from the path — no sidecar. requeue reads
-// the called AET from the file-meta header (0002,0018) — of the message,
-// or of a batch's first member — to choose queue/todo/<AET>/. Reasons are
-// logged, not stored. Nothing is ever deleted; removal from hold/,
+// global failed/ (pre-routing failures). Every move is one atomic rename
+// (of a file or a directory) and is idempotent via unique ids. hold
+// remembers a message's origin by MIRRORING its source path under hold/
+// (hold/route/PACS1/retry/2/<id>.dcm or .../<id>/), so release recovers
+// the origin from the path — no sidecar. requeue reads the called AET
+// from the file-meta header (0002,0018) — of the message, or of a batch's
+// first member — to choose queue/todo/<AET>/. Reasons are logged, not
+// stored. Nothing is ever deleted; removal from hold/, the per-<DEST>
 // corrupt/, or failed/ is the operator's own rm.
 
 #include <cstdio>
@@ -63,7 +63,6 @@ static std::vector<std::string> allQueues() {
     dirs.push_back("route/" + dest + "/failed");
     dirs.push_back("route/" + dest + "/corrupt");
   }
-  dirs.push_back("corrupt");
   dirs.push_back("failed");
   return dirs;
 }

@@ -10,7 +10,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 mkdir -p "$SPOOL/queue/tmp" "$SPOOL/queue/todo" \
          "$SPOOL/route" "$SPOOL/aet" "$SPOOL/dest" \
-         "$SPOOL/failed" "$SPOOL/hold" "$SPOOL/corrupt"
+         "$SPOOL/failed" "$SPOOL/hold"
 mkdir -p "$AGENTS" "$HOME/Library/Logs"
 
 for plist in org.dicomq.recv org.dicomq.send org.dicomq.clean; do
