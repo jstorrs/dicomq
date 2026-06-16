@@ -21,7 +21,6 @@
 
 #include "dcmtk/config/osconfig.h"
 
-#include "dcmtk/dcmdata/dcdeftag.h"
 #include "dcmtk/dcmdata/dcfilefo.h"
 #include "dcmtk/dcmdata/dcmetinf.h"
 
@@ -101,12 +100,7 @@ int main(int argc, char **argv) {
     // stamp the standard-blessed file meta dicomq-recv writes, so an
     // injected object is self-describing for routing and downstream
     // archives just like a received one
-    meta->putAndInsertString(DCM_SourceApplicationEntityTitle,
-                             callingAET.c_str());
-    meta->putAndInsertString(DCM_SendingApplicationEntityTitle,
-                             callingAET.c_str());
-    meta->putAndInsertString(DCM_ReceivingApplicationEntityTitle,
-                             calledAET.c_str());
+    stampOriginAETs(meta, callingAET, calledAET);
 
     const std::string id = generateId();
     const std::string aetDir = sp.queueTodoAET(dest);
@@ -114,14 +108,9 @@ int main(int argc, char **argv) {
 
     // the same commit protocol as dicomq-recv: save into tmp, then one
     // atomic rename into queue/todo/<called-aet>/ commits the message.
-    // EWM_fileformat preserves the loaded preamble (dual TIFF/DICOM).
-    const OFCondition saved = ff.saveFile(
-        tmpDcm.c_str(), ff.getDataset()->getOriginalXfer(), EET_ExplicitLength,
-        EGL_recalcGL, EPD_withoutPadding, 0, 0, EWM_fileformat);
-    if (saved.bad() || !mkdirIfMissing(aetDir, err) ||
+    if (!saveAsReceived(ff, tmpDcm, err) || !mkdirIfMissing(aetDir, err) ||
         !commitFile(tmpDcm, dcmPath(aetDir, id), err)) {
-      std::fprintf(stderr, "dicomq-inject: %s\n",
-                   saved.bad() ? saved.text() : err.c_str());
+      std::fprintf(stderr, "dicomq-inject: %s\n", err.c_str());
       unlink(tmpDcm.c_str());
       removeMessage(aetDir, id, err);
       return 111;

@@ -12,6 +12,7 @@
 // see the library split in CMakeLists.txt.
 
 class DcmMetaInfo;
+class DcmFileFormat;
 
 namespace dicomq {
 
@@ -42,6 +43,22 @@ void extractFileMeta(DcmMetaInfo *info, FileMeta &out);
 // the file cannot be opened or parsed as Part 10; an absent individual tag
 // is not an error (its field stays empty).
 bool readFileMeta(const std::string &path, FileMeta &out);
+
+// Stamp the origin AET tags dicomq-recv and dicomq-inject write so a queued
+// object is self-describing for routing (DESIGN.md "Where message metadata
+// lives"): Source (0002,0016) and Sending (0002,0017) AET are the peer that
+// sent it, Receiving (0002,0018) is the called AET it arrived for.
+void stampOriginAETs(DcmMetaInfo *meta, const std::string &sendingAET,
+                     const std::string &receivingAET);
+
+// Write ff to a queue/tmp/ path as dicomq stores a received object: Part 10
+// in its original transfer syntax, explicit length, recalculated group
+// lengths, no padding, preserving any load-bearing preamble (dual
+// TIFF/DICOM). This is the one definition of how a queued object is written;
+// dicomq-recv and dicomq-inject share it. NOT durable on its own — publish
+// with commitFile(). Returns false and sets err on a save failure.
+bool saveAsReceived(DcmFileFormat &ff, const std::string &tmpPath,
+                    std::string &err);
 
 } // namespace dicomq
 

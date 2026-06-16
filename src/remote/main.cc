@@ -120,10 +120,11 @@ static void recordConnectionFailure(const std::string &reason) {
   if (delay > 3600)
     delay = 3600;
 
+  const time_t now = time(nullptr);
   KeyValueFile status;
-  status.add("last-failure", isoTime(time(nullptr)) + " " + reason);
+  status.add("last-failure", isoTime(now) + " " + reason);
   status.add("failures", std::to_string(failures));
-  status.add("next-attempt-after", isoTime(time(nullptr) + delay));
+  status.add("next-attempt-after", isoTime(now + delay));
   if (!writeKeyValueCommitted(sp, status, sp.routeStatus(destName), err))
     logmsg("cannot write status: " + err);
   logmsg("connection failed (" + reason + "); next attempt in " +

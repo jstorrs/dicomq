@@ -35,7 +35,6 @@
 
 #include "dcmtk/dcmdata/dcdeftag.h"
 #include "dcmtk/dcmdata/dcfilefo.h"
-#include "dcmtk/dcmdata/dcmetinf.h"
 #include "dcmtk/dcmdata/dcuid.h"
 #include "dcmtk/dcmdata/dcxfer.h"
 #include "dcmtk/dcmnet/dimse.h"
@@ -52,6 +51,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "common/dcm.h"
 #include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
@@ -101,13 +101,7 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
   }
 
   // standard-blessed in-file metadata: who sent it, who it was for
-  DcmMetaInfo *meta = ctx->ff->getMetaInfo();
-  meta->putAndInsertString(DCM_SourceApplicationEntityTitle,
-                           ctx->callingAET.c_str());
-  meta->putAndInsertString(DCM_SendingApplicationEntityTitle,
-                           ctx->callingAET.c_str());
-  meta->putAndInsertString(DCM_ReceivingApplicationEntityTitle,
-                           ctx->calledAET.c_str());
+  stampOriginAETs(ctx->ff->getMetaInfo(), ctx->callingAET, ctx->calledAET);
 
   const std::string aet = sanitizeAET(ctx->calledAET);
 
@@ -129,16 +123,12 @@ static void storeCallback(void *cbData, T_DIMSE_StoreProgress *progress,
     groupUID = sanitizeAET(u.c_str()); // UIDs are digits and dots: safe path
   }
 
-  const E_TransferSyntax xfer = (*imageDataSet)->getOriginalXfer();
   const std::string id = generateId();
   const std::string tmpDcm = dcmPath(sp.queueTmp(), id);
   std::string err;
 
-  OFCondition cond =
-      ctx->ff->saveFile(tmpDcm.c_str(), xfer, EET_ExplicitLength, EGL_recalcGL,
-                        EPD_withoutPadding, 0, 0, EWM_fileformat);
-  if (cond.bad()) {
-    logmsg("cannot write " + tmpDcm + ": " + cond.text());
+  if (!saveAsReceived(*ctx->ff, tmpDcm, err)) {
+    logmsg("cannot write " + tmpDcm + ": " + err);
     unlink(tmpDcm.c_str());
     rsp->DimseStatus = STATUS_STORE_Refused_OutOfResources;
     return;

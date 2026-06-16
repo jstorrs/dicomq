@@ -44,11 +44,13 @@ foreach(prog recv send local remote clean inject queue ctl)
 endforeach()
 
 # dicomq-send, -local and -clean speak no DICOM (routing is by directory).
-# The rest are DICOM-aware: recv stamps and accepts objects over the
-# network; remote forwards them; inject submits them; and remote/inject/
-# ctl/queue read the file-meta header (via dicomq-dcm) to recover a routed
-# message's routing fields (no sidecar carries them anymore).
-target_link_libraries(dicomq-recv PRIVATE DCMTK::dcmnet DCMTK::dcmtls)
+# The rest are DICOM-aware and link dicomq-dcm for the shared file-meta
+# helpers: recv stamps and accepts objects over the network and writes them
+# with saveAsReceived(); inject submits them the same way; remote forwards
+# them; and remote/inject/ctl/queue read the file-meta header to recover a
+# routed message's routing fields (no sidecar carries them anymore).
+target_link_libraries(dicomq-recv PRIVATE dicomq-dcm DCMTK::dcmnet
+                      DCMTK::dcmtls)
 target_link_libraries(dicomq-remote PRIVATE dicomq-dcm DCMTK::dcmnet
                       DCMTK::dcmtls DCMTK::dcmjpeg DCMTK::dcmjpls)
 target_link_libraries(dicomq-inject PRIVATE dicomq-dcm)

@@ -36,4 +36,26 @@ bool readFileMeta(const std::string &path, FileMeta &out) {
   return true;
 }
 
+void stampOriginAETs(DcmMetaInfo *meta, const std::string &sendingAET,
+                     const std::string &receivingAET) {
+  meta->putAndInsertString(DCM_SourceApplicationEntityTitle,
+                           sendingAET.c_str());
+  meta->putAndInsertString(DCM_SendingApplicationEntityTitle,
+                           sendingAET.c_str());
+  meta->putAndInsertString(DCM_ReceivingApplicationEntityTitle,
+                           receivingAET.c_str());
+}
+
+bool saveAsReceived(DcmFileFormat &ff, const std::string &tmpPath,
+                    std::string &err) {
+  const OFCondition cond = ff.saveFile(
+      tmpPath.c_str(), ff.getDataset()->getOriginalXfer(), EET_ExplicitLength,
+      EGL_recalcGL, EPD_withoutPadding, 0, 0, EWM_fileformat);
+  if (cond.bad()) {
+    err = cond.text();
+    return false;
+  }
+  return true;
+}
+
 } // namespace dicomq
