@@ -118,13 +118,15 @@ struct DeliveryResult {
   std::string reason; // logged (or recorded, for ConnectionBroke); never stored
 };
 
-// The association carries at most 127 presentation contexts: ids are odd and
-// a Uint8, so 253 is the last usable id (255 + 2 would wrap to 1). With many
-// SOP classes in one run the budget can run out before every class gets a
-// context; classes left unproposed are normally DEFERRED, not failed (a
-// later, smaller batch will fit them). The exception is a single message that
-// on its own needs more than the budget — no later batch is smaller than one
-// message, so that one must fail (FailPermanent), not defer.
+// Presentation-context ids are odd and a Uint8, so 253 is the last usable id
+// (255 + 2 would wrap to 1) — and that ceiling is exactly kMaxContexts
+// distinct contexts: (253 - 1)/2 + 1 = 127. With many SOP classes in one run
+// the budget can run out before every class gets a context; classes left
+// unproposed are normally DEFERRED, not failed (a later, smaller batch will
+// fit them). The exception is a single message that on its own needs more than
+// the budget — no later batch is smaller than one message, so that one must
+// fail (FailPermanent), not defer.
+static constexpr int kMaxPresentationContextID = 253;
 static constexpr size_t kMaxContexts = 127;
 
 static void logmsg(const std::string &m) {
@@ -280,9 +282,36 @@ static std::vector<WorkItem> gatherDueWork(std::set<std::string> &sopClasses) {
   return work;
 }
 
-// Build presentation contexts and request the association. proposeTS is the
-// configured syntaxes, or — when the profile lists none — every stored syntax
-// seen in this run plus the two uncompressed defaults. One context per (SOP
+// The transfer syntaxes to propose for a set of objects, in preference order:
+// the profile's list when it has one (fixed regardless of payload), else each
+// object's own stored syntax followed by the two uncompressed defaults.
+// Deduplicated. openAssociation feeds it every object in the run to build the
+// association's contexts; deliverMessage feeds it one message's objects to
+// size that message's OWN context need for the defer-vs-fail decision. Keeping
+// both on one rule means the two budget computations cannot silently diverge.
+static std::vector<std::string>
+syntaxesToPropose(const std::vector<Object> &objects,
+                  const ProposeProfile &profile) {
+  if (!profile.transferSyntaxes.empty())
+    return profile.transferSyntaxes;
+  std::vector<std::string> ts;
+  auto add = [&ts](const std::string &uid) {
+    if (uid.empty())
+      return;
+    for (const auto &p : ts)
+      if (p == uid)
+        return;
+    ts.push_back(uid);
+  };
+  for (const auto &o : objects)
+    add(o.xferUID);
+  add(UID_LittleEndianExplicitTransferSyntax);
+  add(UID_LittleEndianImplicitTransferSyntax);
+  return ts;
+}
+
+// Build presentation contexts and request the association. The syntaxes come
+// from syntaxesToPropose() over every object in the run. One context per (SOP
 // class, transfer syntax) gives precise control over what an accepted context
 // implies. On failure this records the connection failure and returns nullptr;
 // on success it returns the open association and fills proposedSops with the
@@ -293,19 +322,11 @@ openAssociation(T_ASC_Network *net, const RemoteConfig &cfg,
                 const std::vector<WorkItem> &work,
                 const std::set<std::string> &sopClasses, bool useTLS,
                 std::set<std::string> &proposedSops) {
-  std::vector<std::string> proposeTS = profile.transferSyntaxes;
-  if (proposeTS.empty()) {
-    for (const auto &w : work)
-      for (const auto &o : w.objects) {
-        bool seen = false;
-        for (const auto &p : proposeTS)
-          seen = seen || p == o.xferUID;
-        if (!seen && !o.xferUID.empty())
-          proposeTS.push_back(o.xferUID);
-      }
-    proposeTS.push_back(UID_LittleEndianExplicitTransferSyntax);
-    proposeTS.push_back(UID_LittleEndianImplicitTransferSyntax);
-  }
+  std::vector<Object> allObjects;
+  for (const auto &w : work)
+    allObjects.insert(allObjects.end(), w.objects.begin(), w.objects.end());
+  const std::vector<std::string> proposeTS =
+      syntaxesToPropose(allObjects, profile);
 
   T_ASC_Parameters *params = nullptr;
   ASC_createAssociationParameters(&params, ASC_DEFAULTMAXPDU,
@@ -324,10 +345,10 @@ openAssociation(T_ASC_Network *net, const RemoteConfig &cfg,
   // destination refused a class we did propose" (a real rejection).
   T_ASC_PresentationContextID pid = 1;
   for (const auto &sop : sopClasses) {
-    if (pid > 253)
+    if (pid > kMaxPresentationContextID)
       break; // context budget reached; remaining classes deferred
     for (const auto &ts : proposeTS) {
-      if (pid > 253)
+      if (pid > kMaxPresentationContextID)
         break;
       const char *tsArr[] = {ts.c_str()};
       ASC_addPresentationContext(params, pid, sop.c_str(), tsArr, 1);
@@ -361,23 +382,13 @@ deliverMessage(T_ASC_Association *assoc, const WorkItem &item,
                const std::set<std::string> &proposedSops) {
   // Contexts this message needs ON ITS OWN (so the defer-vs-fail decision does
   // not depend on what else shares this run): one per (distinct SOP class x
-  // proposed syntax). proposeTS is fixed when the profile lists syntaxes;
-  // otherwise it is the message's own syntaxes plus the two uncompressed
-  // defaults, mirroring how openAssociation builds proposeTS.
-  std::set<std::string> itemSops, itemTs;
+  // proposed syntax), using the same syntaxesToPropose() rule openAssociation
+  // does so the two budget computations stay in lockstep.
+  std::set<std::string> itemSops;
   for (const auto &o : item.objects)
     itemSops.insert(o.sopClass);
-  if (!profile.transferSyntaxes.empty()) {
-    itemTs.insert(profile.transferSyntaxes.begin(),
-                  profile.transferSyntaxes.end());
-  } else {
-    for (const auto &o : item.objects)
-      if (!o.xferUID.empty())
-        itemTs.insert(o.xferUID);
-    itemTs.insert(UID_LittleEndianExplicitTransferSyntax);
-    itemTs.insert(UID_LittleEndianImplicitTransferSyntax);
-  }
-  const bool itemCannotFit = itemSops.size() * itemTs.size() > kMaxContexts;
+  const size_t itemTs = syntaxesToPropose(item.objects, profile).size();
+  const bool itemCannotFit = itemSops.size() * itemTs > kMaxContexts;
 
   for (const auto &obj : item.objects) {
     DcmFileFormat ff;
@@ -408,10 +419,10 @@ deliverMessage(T_ASC_Association *assoc, const WorkItem &item,
           // This is structural, not transient — fail it outright rather than
           // climb the retry ladder, which exists for transient problems.
           return {Outcome::FailPermanent,
-                  "needs " + std::to_string(itemSops.size() * itemTs.size()) +
+                  "needs " + std::to_string(itemSops.size() * itemTs) +
                       " presentation contexts (" +
                       std::to_string(itemSops.size()) + " SOP classes x " +
-                      std::to_string(itemTs.size()) + " syntaxes), over the " +
+                      std::to_string(itemTs) + " syntaxes), over the " +
                       std::to_string(kMaxContexts) +
                       "-context association limit"};
         return {Outcome::Defer, "presentation-context budget exhausted, " +
