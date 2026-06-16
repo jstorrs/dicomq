@@ -181,11 +181,19 @@ static void rejectAssociation(T_ASC_Association *assoc,
 }
 
 static int handleAssociation(T_ASC_Association *assoc) {
-  // free-space watermark: refuse before anything is received
+  // free-space watermark: refuse before anything is received. Fail CLOSED on
+  // a statvfs failure (freeBytes returns -1): an unstattable spool is among
+  // the strongest signals it is unhealthy, so refuse rather than write onto a
+  // filesystem we cannot even measure — exactly the ENOSPC-mid-object failure
+  // the watermark exists to avoid (DESIGN.md "Commit protocols", precondition
+  // 0).
   const long long freeNow = freeBytes(sp.root);
-  if (freeNow >= 0 && freeNow < watermarkBytes) {
-    logmsg("refusing association: " + std::to_string(freeNow) +
-           " bytes free is below the watermark");
+  if (freeNow < 0 || freeNow < watermarkBytes) {
+    logmsg(freeNow < 0
+               ? "refusing association: cannot determine free space on '" +
+                     sp.root + "' (statvfs failed)"
+               : "refusing association: " + std::to_string(freeNow) +
+                     " bytes free is below the watermark");
     rejectAssociation(assoc, ASC_RESULT_REJECTEDTRANSIENT,
                       ASC_SOURCE_SERVICEPROVIDER_PRESENTATION_RELATED,
                       ASC_REASON_SP_PRES_TEMPORARYCONGESTION);

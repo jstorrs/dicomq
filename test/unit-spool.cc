@@ -100,6 +100,14 @@ int main() {
     expect(ok, "routeQueueDirs sorts rungs numerically, dropping malformed");
   }
 
+  // --- freeBytes sentinel ---------------------------------------------
+  // recv's watermark fails closed on a statvfs failure, which freeBytes
+  // reports as -1. Pin that contract: a real spool root measures >= 0, a
+  // path that cannot be statted is -1 (so the guard refuses, never writes).
+  expect(freeBytes(root) >= 0, "freeBytes of a real directory is non-negative");
+  expect(freeBytes(root + "/no-such-path") == -1,
+         "freeBytes of a missing path is the -1 'unknown' sentinel");
+
   // --- missing optional config vs required config ---------------------
   {
     const std::string absent = root + "/does-not-exist";
