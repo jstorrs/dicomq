@@ -135,10 +135,15 @@ int main(int argc, char **argv) {
       return 100;
     }
   }
-  if (graceHours < 0 || completeGraceHours < 0) {
-    // a negative grace pushes the cutoff into the future, which would
-    // reap freshly written tmp/ and not-yet-committed objects
-    std::fprintf(stderr, "dicomq-clean: -g and -G must not be negative\n");
+  // Lower bound: a negative grace pushes the cutoff into the future, which
+  // would reap freshly written tmp/ and not-yet-committed objects. Upper bound:
+  // a century of hours is plainly a typo, and hours*3600 (below) on a huge
+  // value is signed-overflow UB.
+  const long maxHours = 24L * 365 * 100;
+  if (graceHours < 0 || graceHours > maxHours || completeGraceHours < 0 ||
+      completeGraceHours > maxHours) {
+    std::fprintf(stderr, "dicomq-clean: -g and -G must be 0..%ld hours\n",
+                 maxHours);
     return 100;
   }
 

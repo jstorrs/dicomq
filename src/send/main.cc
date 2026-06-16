@@ -379,9 +379,12 @@ int main(int argc, char **argv) {
       spoolArg = optarg;
       break;
     case 'i':
-      if (!parseWholeInt(optarg, interval) || interval <= 0) {
-        std::fprintf(stderr,
-                     "dicomq-send: -i must be a positive number of seconds\n");
+      // upper bound keeps interval*1000 (the poll(2) millisecond timeout) well
+      // inside int — a value that overflowed it would wrap to a negative
+      // timeout, which poll reads as "block forever"
+      if (!parseWholeInt(optarg, interval) || interval <= 0 ||
+          interval > 86400) {
+        std::fprintf(stderr, "dicomq-send: -i must be 1..86400 seconds\n");
         return 100;
       }
       break;

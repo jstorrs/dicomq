@@ -157,6 +157,13 @@ check "clean keeps a recent complete/ object"  test -e "$CDIR/$NEW.dcm"
 check "clean never reaps per-dest failed/"     test -e "$DICOMQ_SPOOL/route/PACS1/failed/$OLD.dcm"
 check "clean empties trash/"                   test ! -e "$DICOMQ_SPOOL/trash/leftover.123.0"
 
+# CLI numeric bounds: reject values that would overflow the hours*3600 /
+# interval*1000 arithmetic (an overflowed poll timeout blocks forever)
+check_not "clean rejects an out-of-range -g"   "$BIN/dicomq-clean" -g 99999999
+check_not "send rejects an out-of-range -i"    "$BIN/dicomq-send" -i 999999999
+new_spool
+check "send accepts -i at the cap (one pass)"  "$BIN/dicomq-send" -i 86400 --once
+
 # --- local ----------------------------------------------------------------
 new_spool
 mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
