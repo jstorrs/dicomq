@@ -12,8 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # llvm is pinned to major 21 to match the clang-format pin (21.1.8)
+      # and the version the .clang-tidy baseline was tuned against. The
+      # plain `llvm` formula floats to the newest major (now 22), which
+      # both fails to locate the macOS SDK C++ headers under brew's
+      # clang-tidy and auto-enables new bugprone-*/clang-analyzer-* checks
+      # via the wildcards in .clang-tidy -- neither vetted here. Bump this
+      # deliberately when adopting a new toolchain, not implicitly.
       - name: Install dependencies
-        run: brew install cmake dcmtk dylibbundler llvm
+        run: brew install cmake dcmtk dylibbundler llvm@21
 
       - name: Configure
         run: cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix dcmtk)"
@@ -24,7 +31,7 @@ jobs:
       # --warnings-as-errors.
       - name: Lint (clang-tidy)
         run: |
-          tidy="$(brew --prefix llvm)/bin/clang-tidy"
+          tidy="$(brew --prefix llvm@21)/bin/clang-tidy"
           "$tidy" --version
           "$tidy" -p build --warnings-as-errors='*' $(git ls-files 'src/*.cc')
 
