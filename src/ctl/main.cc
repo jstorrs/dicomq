@@ -40,6 +40,8 @@ using namespace dicomq;
 
 static Spool sp;
 
+static void logmsg(const std::string &m) { dicomq::logmsg("dicomq-ctl", m); }
+
 static int usage() {
   std::fprintf(stderr,
                "usage: dicomq-ctl [-s <spool>] hold|release|requeue <id>\n"
@@ -139,8 +141,7 @@ int main(int argc, char **argv) {
   bool isBatch = false;
   const std::string from = findMessage(id, isBatch);
   if (from.empty()) {
-    std::fprintf(stderr, "dicomq-ctl: no message '%s' in any queue\n",
-                 id.c_str());
+    logmsg("no message '" + id + "' in any queue");
     return 111;
   }
   const std::string fromDir = sp.root + "/" + from;
@@ -151,11 +152,11 @@ int main(int argc, char **argv) {
     // mirror the origin path under hold/ so release can recover it
     const std::string toDir = sp.holdDir() + "/" + from;
     if (!mkdirsUnder(sp.holdDir(), from, err)) {
-      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
+      logmsg(err);
       return 111;
     }
     if (!moveMessage(fromDir, toDir, id, err, isBatch)) {
-      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
+      logmsg(err);
       return 111;
     }
     std::printf("held %s (from %s)\n", id.c_str(), from.c_str());
@@ -164,17 +165,17 @@ int main(int argc, char **argv) {
 
   if (verb == "release") {
     if (from.rfind("hold/", 0) != 0) {
-      std::fprintf(stderr, "dicomq-ctl: '%s' is not in hold/\n", id.c_str());
+      logmsg("'" + id + "' is not in hold/");
       return 111;
     }
     const std::string origin = from.substr(5); // strip "hold/"
     const std::string toDir = sp.root + "/" + origin;
     if (!mkdirsUnder(sp.root, origin, err)) {
-      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
+      logmsg(err);
       return 111;
     }
     if (!moveMessage(fromDir, toDir, id, err, isBatch)) {
-      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
+      logmsg(err);
       return 111;
     }
     std::printf("released %s (to %s)\n", id.c_str(), origin.c_str());
@@ -185,8 +186,7 @@ int main(int argc, char **argv) {
     const std::string mp = metaPath(fromDir, id, isBatch);
     const std::string aet = mp.empty() ? "" : readCalledAET(mp);
     if (aet.empty()) {
-      std::fprintf(stderr, "dicomq-ctl: cannot read a called AET from '%s'\n",
-                   id.c_str());
+      logmsg("cannot read a called AET from '" + id + "'");
       return 111;
     }
     const std::string toDir = sp.queueTodoAET(aet);
@@ -194,7 +194,7 @@ int main(int argc, char **argv) {
       return 0; // idempotent
     if (!mkdirIfMissing(toDir, err) ||
         !moveMessage(fromDir, toDir, id, err, isBatch)) {
-      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
+      logmsg(err);
       return 111;
     }
     std::printf("requeued %s (from %s, to queue/todo/%s)\n", id.c_str(),
@@ -212,11 +212,10 @@ int main(int argc, char **argv) {
     // "Spool layout" lists the global failed/ as dicomq's to write)
     if (!mkdirIfMissing(sp.failedDir(), err) ||
         !moveMessage(fromDir, sp.failedDir(), id, err, isBatch)) {
-      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
+      logmsg(err);
       return 111;
     }
-    std::fprintf(stderr, "dicomq-ctl: failed %s: %s\n", id.c_str(),
-                 reason.c_str());
+    logmsg("failed " + id + ": " + reason);
     std::printf("failed %s (from %s)\n", id.c_str(), from.c_str());
     return 0;
   }

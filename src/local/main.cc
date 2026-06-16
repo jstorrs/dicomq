@@ -39,6 +39,8 @@
 namespace fs = std::filesystem;
 using namespace dicomq;
 
+static void logmsg(const std::string &m) { dicomq::logmsg("dicomq-local", m); }
+
 // Outcome of a delivery attempt. Permanent = re-running cannot help, so the
 // caller escalates to failed/; Temporary = transient, leave the message queued.
 enum class Delivery { Ok, Temporary, Permanent };
@@ -140,10 +142,8 @@ int main(int argc, char **argv) {
   std::string err;
 
   if (!isDir(dir + "/new")) {
-    std::fprintf(stderr,
-                 "dicomq-local: '%s/new' is not a directory "
-                 "(dicomq never creates maildirs)\n",
-                 dir.c_str());
+    logmsg("'" + dir +
+           "/new' is not a directory (dicomq never creates maildirs)");
     return 111;
   }
 
@@ -156,10 +156,10 @@ int main(int argc, char **argv) {
   case Delivery::Ok:
     return 0;
   case Delivery::Permanent:
-    std::fprintf(stderr, "dicomq-local: %s\n", err.c_str());
+    logmsg(err);
     return 100; // re-running cannot help; the caller escalates to failed/
   case Delivery::Temporary:
-    std::fprintf(stderr, "dicomq-local: %s\n", err.c_str());
+    logmsg(err);
     return 111;
   }
   return 111; // unreachable; keep the compiler happy

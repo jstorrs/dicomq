@@ -40,12 +40,13 @@ using namespace dicomq;
 static time_t cutoff;
 static int problems = 0;
 
+static void logmsg(const std::string &m) { dicomq::logmsg("dicomq-clean", m); }
+
 static void reap(const std::string &path) {
   if (unlink(path.c_str()) == 0)
     std::printf("removed %s\n", path.c_str());
   else if (errno != ENOENT) {
-    std::fprintf(stderr, "dicomq-clean: cannot remove '%s': %s\n", path.c_str(),
-                 strerror(errno));
+    logmsg("cannot remove '" + path + "': " + strerror(errno));
     problems++;
   }
 }
@@ -82,8 +83,7 @@ static void reapComplete(const Spool &sp, time_t completeCutoff) {
       const std::string p = entry.path().string();
       const auto n = fs::remove_all(p, ec);
       if (ec) {
-        std::fprintf(stderr, "dicomq-clean: cannot remove '%s': %s\n",
-                     p.c_str(), ec.message().c_str());
+        logmsg("cannot remove '" + p + "': " + ec.message());
         problems++;
       } else if (n > 0)
         std::printf("removed %s\n", p.c_str());

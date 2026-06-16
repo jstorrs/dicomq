@@ -34,6 +34,8 @@
 
 using namespace dicomq;
 
+static void logmsg(const std::string &m) { dicomq::logmsg("dicomq-inject", m); }
+
 static int usage() {
   std::fprintf(stderr, "usage: dicomq-inject [-s <spool>] -c <called-aet> [-a "
                        "<calling-aet>] <file.dcm>...\n");
@@ -66,10 +68,8 @@ int main(int argc, char **argv) {
   // queue/todo/<name> destination.
   const std::string dest = sanitizeAET(calledAET);
   if (isReservedName(dest)) {
-    std::fprintf(stderr,
-                 "dicomq-inject: called AET '%s' resolves to reserved name "
-                 "'%s'\n",
-                 calledAET.c_str(), dest.c_str());
+    logmsg("called AET '" + calledAET + "' resolves to reserved name '" + dest +
+           "'");
     return 100;
   }
 
@@ -82,18 +82,15 @@ int main(int argc, char **argv) {
     DcmFileFormat ff;
     OFCondition cond = ff.loadFile(file);
     if (cond.bad()) {
-      std::fprintf(stderr, "dicomq-inject: cannot read '%s': %s\n", file,
-                   cond.text());
+      logmsg("cannot read '" + std::string(file) + "': " + cond.text());
       return 100;
     }
     DcmMetaInfo *meta = ff.getMetaInfo();
     FileMeta fm;
     extractFileMeta(meta, fm);
     if (!fm.hasRouting()) {
-      std::fprintf(
-          stderr,
-          "dicomq-inject: '%s' has no usable file meta header (not Part 10?)\n",
-          file);
+      logmsg("'" + std::string(file) +
+             "' has no usable file meta header (not Part 10?)");
       return 100;
     }
 
@@ -110,7 +107,7 @@ int main(int argc, char **argv) {
     // atomic rename into queue/todo/<called-aet>/ commits the message.
     if (!saveAsReceived(ff, tmpDcm, err) || !mkdirIfMissing(aetDir, err) ||
         !commitFile(tmpDcm, dcmPath(aetDir, id), err)) {
-      std::fprintf(stderr, "dicomq-inject: %s\n", err.c_str());
+      logmsg(err);
       unlink(tmpDcm.c_str());
       removeMessage(aetDir, id, err);
       return 111;
