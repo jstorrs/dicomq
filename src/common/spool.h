@@ -88,6 +88,10 @@ struct Spool {
   std::string failedDir() const { return root + "/failed"; }
   std::string holdDir() const { return root + "/hold"; }
   std::string corruptDir() const { return root + "/corrupt"; }
+  // Staging area for discarding a superseded batch: it is renamed here
+  // whole (one atomic step that dequeues it) and then deleted. dicomq's to
+  // create and reap (dicomq-clean); no queue walker scans it.
+  std::string trashDir() const { return root + "/trash"; }
 };
 
 // True if name carries the ".dcm" message suffix.

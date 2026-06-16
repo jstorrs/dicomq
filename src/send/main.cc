@@ -287,7 +287,7 @@ static void processMessage(const std::string &aet, const Message &msg) {
     }
   }
 
-  if (!removeMessage(srcDir, id, err, batch))
+  if (!discardMessage(sp, srcDir, id, batch, err))
     logmsg("routed " + id + " but cannot dequeue: " + err);
 }
 

@@ -96,6 +96,42 @@ bool removeMessage(const std::string &dir, const std::string &id,
   return true;
 }
 
+bool discardMessage(const Spool &sp, const std::string &dir,
+                    const std::string &id, bool isBatch, std::string &err) {
+  const std::string src = messagePath(dir, id, isBatch);
+  if (!isBatch) {
+    // a file unlink is already atomic; just make the dequeue durable
+    if (unlink(src.c_str()) != 0 && errno != ENOENT) {
+      err = "cannot unlink '" + src + "': " + strerror(errno);
+      return false;
+    }
+    return fsyncPath(dirOf(src), err);
+  }
+  // a batch is a directory, and an in-place recursive delete is not atomic:
+  // a crash partway could leave a shrunken batch to be re-delivered. Rename
+  // it whole into trash/ under a process-unique name (so concurrent or
+  // fan-out discards of the same id never collide) — that single rename is
+  // the dequeue — then delete it there. The trash delete is best-effort:
+  // dicomq-clean reaps anything a crash leaves behind.
+  static int counter = 0;
+  if (!mkdirIfMissing(sp.trashDir(), err))
+    return false;
+  const std::string dst = sp.trashDir() + "/" + id + "." +
+                          std::to_string(getpid()) + "." +
+                          std::to_string(counter++);
+  if (rename(src.c_str(), dst.c_str()) != 0) {
+    if (errno == ENOENT && !pathExists(src))
+      return true; // a prior pass already discarded it
+    err = "cannot discard '" + src + "': " + strerror(errno);
+    return false;
+  }
+  if (!fsyncPath(dirOf(src), err)) // the dequeue is now durable
+    return false;
+  std::error_code ec;
+  fs::remove_all(dst, ec); // best-effort; clean reaps a leftover
+  return true;
+}
+
 bool messageDue(const std::string &dir, const std::string &id, int retryLevel,
                 time_t now, bool isBatch) {
   if (retryLevel <= 0)

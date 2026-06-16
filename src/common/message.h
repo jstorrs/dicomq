@@ -62,9 +62,21 @@ bool linkMessage(const std::string &fromDir, const std::string &toDir,
                  const std::string &id, std::string &err, bool isBatch = false);
 
 // Remove message <id> from dir — unlink the file, or recursively remove
-// the batch directory. A missing message is tolerated (idempotent).
+// the batch directory. A missing message is tolerated (idempotent). Use
+// this only for an undelivered message (an interrupted write, an empty
+// husk): the recursive batch delete is not atomic, so a crash partway can
+// leave a partial directory.
 bool removeMessage(const std::string &dir, const std::string &id,
                    std::string &err, bool isBatch = false);
+
+// Discard a *superseded* message from dir — one whose content already lives
+// safely elsewhere (fanned out, or copied to the next retry rung). Unlike
+// removeMessage this is crash-atomic for a batch: the directory is renamed
+// whole into trash/ (the dequeue) and then deleted there, so a crash can
+// never leave a partial batch behind to be re-delivered. The source parent
+// is fsynced, making the dequeue durable. A missing message is tolerated.
+bool discardMessage(const Spool &sp, const std::string &dir,
+                    const std::string &id, bool isBatch, std::string &err);
 
 // Whether message <id> in dir, sitting at retry rung retryLevel, is due
 // for a delivery attempt at time now. Rung 0 (todo/) is always due; rung

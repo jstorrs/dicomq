@@ -148,11 +148,14 @@ OLD=20000101000000000.0.000000                       # year 2000: aged out
 NEW=$(date -u +%Y%m%d%H%M%S)000.0.000000             # ~now: within grace
 touch "$CDIR/$OLD.dcm" "$CDIR/$NEW.dcm" "$CDIR/20000102000000000.0.000000/a.dcm"
 mkdir -p "$DICOMQ_SPOOL/route/PACS1/failed"; touch "$DICOMQ_SPOOL/route/PACS1/failed/$OLD.dcm"
+# trash/ holds a crash-leftover discard; clean empties it unconditionally
+mkdir -p "$DICOMQ_SPOOL/trash/leftover.123.0"; touch "$DICOMQ_SPOOL/trash/leftover.123.0/a.dcm"
 "$BIN/dicomq-clean" >/dev/null
 check "clean reaps an aged complete/ object"   test ! -e "$CDIR/$OLD.dcm"
 check "clean reaps an aged complete/ batch"    test ! -e "$CDIR/20000102000000000.0.000000"
 check "clean keeps a recent complete/ object"  test -e "$CDIR/$NEW.dcm"
 check "clean never reaps per-dest failed/"     test -e "$DICOMQ_SPOOL/route/PACS1/failed/$OLD.dcm"
+check "clean empties trash/"                   test ! -e "$DICOMQ_SPOOL/trash/leftover.123.0"
 
 # --- local ----------------------------------------------------------------
 new_spool
@@ -545,6 +548,8 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
         test -z "$(ls -A "$DICOMQ_SPOOL/aet/STUDYR/tmp")"
   check "study-mode: queue/todo drained after routing" \
         test -z "$(find "$DICOMQ_SPOOL/queue/todo" -name '*.dcm')"
+  check "study-mode: batch fan-out leaves no trash residue" \
+        test -z "$(ls -A "$DICOMQ_SPOOL/trash" 2>/dev/null)"
 
   # deliver the held batch: one association carries the whole study
   storescp -od "$WORK/studypacs" $SPPORT 2>/dev/null & SCP=$!
@@ -596,6 +601,8 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
         test -n "$DBATCH" -a "$(ndcm "$DICOMQ_SPOOL/route/PACS1/retry/1/$DBATCH")" = 2
   check "study-mode: demotion empties todo" \
         test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+  check "study-mode: batch demote leaves no trash residue" \
+        test -z "$(ls -A "$DICOMQ_SPOOL/trash" 2>/dev/null)"
 
   # queue + ctl treat the batch (now in retry/1) as one message
   check "study-mode: queue lists a batch with its object count" \

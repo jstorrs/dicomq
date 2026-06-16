@@ -16,8 +16,12 @@
 // audit/recovery window; -G 0 clears it every pass. (failed/ and corrupt/
 // are operator-managed and never auto-reaped.)
 //
-// Touches nothing younger and nothing outside those two areas. Reports every
-// removal on stdout. Speaks no DICOM; links only dicomq-common.
+// Finally empties trash/ — batch directories a discard renamed aside for
+// deletion but a crash left behind (normally deleted inline). These are
+// already dequeued, so they are reaped unconditionally.
+//
+// Reports every removal on stdout. Speaks no DICOM; links only
+// dicomq-common.
 
 #include <cstdio>
 #include <cstdlib>
@@ -87,6 +91,21 @@ static void reapComplete(const Spool &sp, time_t completeCutoff) {
   }
 }
 
+// Reap trash/: a batch that a discard renamed aside but a crash left
+// undeleted (the normal case deletes it inline). Each entry is already
+// dequeued, so remove it unconditionally — no grace. Errors are ignored:
+// the likeliest one is a concurrent discard removing the same entry, which
+// is the outcome we wanted anyway.
+static void reapTrash(const Spool &sp) {
+  std::error_code ec;
+  for (const auto &entry : fs::directory_iterator(sp.trashDir(), ec)) {
+    const std::string p = entry.path().string();
+    std::error_code rec;
+    if (fs::remove_all(p, rec) > 0 && !rec)
+      std::printf("removed %s\n", p.c_str());
+  }
+}
+
 int main(int argc, char **argv) {
   std::string spoolArg;
   long graceHours = 36;
@@ -123,6 +142,7 @@ int main(int argc, char **argv) {
 
   cleanTmp(sp.queueTmp());
   reapComplete(sp, now - completeGraceHours * 3600);
+  reapTrash(sp);
 
   return problems ? 111 : 0;
 }

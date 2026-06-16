@@ -44,7 +44,7 @@ must not be on NFS.
 | `dicomq-send` | `qmail-send` | watch the queue, route each object per its called AET |
 | `dicomq-local` | `qmail-local` | deliver one object into a maildir-style directory |
 | `dicomq-remote` | `qmail-remote` | forward queued objects to one destination over C-STORE |
-| `dicomq-clean` | `qmail-clean` | reap interrupted `queue/tmp/` writes and aged `route/<DEST>/complete/` deliveries |
+| `dicomq-clean` | `qmail-clean` | reap interrupted `queue/tmp/` writes, aged `route/<DEST>/complete/` deliveries, and `trash/` |
 | `dicomq-inject` | `qmail-inject` | enqueue a local DICOM file as if it had been received |
 | `dicomq-queue` | `postqueue`/`qshape` | show what is queued where: counts, ages, destination status (read-only) |
 | `dicomq-ctl` | `postsuper` | queue surgery: hold, release, requeue, fail |
@@ -109,6 +109,7 @@ failed/                # pre-routing failures only: dicomq-send could not
                        # dicomq-ctl fail. Forwarding failures live per-DEST.
 hold/                  # operator-frozen messages, origin mirrored as a subpath
 corrupt/               # legacy/global quarantine (forwarding now per-DEST)
+trash/                 # batches renamed here to be deleted; reaped by clean
 ```
 
 The per-destination `complete/`, `failed/`, and `corrupt/` are **per
@@ -126,8 +127,9 @@ entries — creating them **is** configuration, done by the operator (the
 retry-ladder depth is exactly which `retry/<k>/` dirs exist). The per-AET
 `queue/todo/<AET>/` leaves, the per-destination `complete/`, `failed/`, and
 `corrupt/` sinks (created on first use), the `accum/<AET>/<UID>/`
-accumulation directories, the global `failed/`, `hold/`, `corrupt/`, route
-`status` files, and the contents of maildirs are dicomq's to write.
+accumulation directories, the global `failed/`, `hold/`, `corrupt/`,
+`trash/`, route `status` files, and the contents of maildirs are dicomq's
+to write.
 
 Directory names under `aet/` (and `queue/todo/`) are *sanitized* AE
 titles: trimmed, alphanumerics and `-` kept, everything else replaced by
@@ -270,8 +272,13 @@ DICOM — the called AET is the subdirectory name):
 2. for each `forward <DEST>` instruction: `link` the object into
    `route/<DEST>/todo/` (`EEXIST` = already routed = success)
 3. for each `maildir <dir>` instruction: invoke `dicomq-local`
-4. when every instruction has committed: unlink the object from
-   `queue/todo/<AET>/`
+4. when every instruction has committed: discard the object from
+   `queue/todo/<AET>/` — `unlink` for a single object, but for a batch a
+   rename of the whole directory into `trash/` followed by a delete, so the
+   dequeue is one atomic step (an in-place recursive delete a crash could
+   leave half-done would re-deliver a shrunken study). `dicomq-remote` uses
+   the same discard when it copies a rejected batch up to the next retry
+   rung.
 
 A crash mid-routing re-routes the whole message on restart; steps 2–3
 are idempotent. An object whose AET has no `aet/` directory (only
@@ -535,10 +542,11 @@ Three Postfix lessons bound the cost of this scheme:
   `dicomq-send`, also runnable by hand against the spool — which is the
   debugging story: every stage can be re-run from the shell.
 - `dicomq-clean` runs from a timer/cron. It reaps interrupted `queue/tmp/`
-  writes (`-g`, default 36h) and aged `route/<DEST>/complete/` deliveries
-  (`-G`, default 72h; `-G 0` clears them each pass). Complete-age is the
-  message-id timestamp, as everywhere else, not file mtime (a rename
-  preserves mtime).
+  writes (`-g`, default 36h), aged `route/<DEST>/complete/` deliveries
+  (`-G`, default 72h; `-G 0` clears them each pass), and `trash/` (batches a
+  discard renamed aside but a crash left undeleted; reaped unconditionally).
+  Complete-age is the message-id timestamp, as everywhere else, not file
+  mtime (a rename preserves mtime).
 - `dicomq-queue` is read-only and safe for any user with read access to
   the spool; `dicomq-ctl` performs queue surgery and runs as the send
   user. Both do a cheap *meta-only* read of an object's file header to

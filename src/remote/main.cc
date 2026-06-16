@@ -182,7 +182,7 @@ static void demote(const WorkItem &w, const std::string &reason) {
       return;
     }
   }
-  if (!removeMessage(w.dir, w.id, err, w.isBatch))
+  if (!discardMessage(sp, w.dir, w.id, w.isBatch, err))
     logmsg("demoted " + w.id + " but cannot remove source: " + err);
 }
 
