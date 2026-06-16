@@ -26,7 +26,6 @@
 #include <unistd.h>
 
 #include "common/dcm.h"
-#include "common/kvfile.h"
 #include "common/message.h"
 #include "common/spool.h"
 
@@ -142,11 +141,16 @@ static void destSummary(const std::string &dest) {
   std::string extra;
   if (pathExists(sp.routeHoldFlag(dest)))
     extra += "[held] ";
-  KeyValueFile status;
-  std::string err;
-  if (KeyValueFile::read(sp.routeStatus(dest), status, err))
-    extra += "[down until " + status.get("next-attempt-after") + ": " +
-             status.get("last-failure") + "] ";
+  // A status file persisting does NOT mean the destination is being skipped:
+  // dicomq-send retries once next-attempt-after elapses (removing the file only
+  // on a successful association). Use send's exact backoff predicate so the
+  // label can't lie — "down until" only while still backed off, otherwise just
+  // the last failure for a retry-eligible destination.
+  const DestStatus ds = readDestStatus(sp, dest);
+  if (ds.present)
+    extra += ds.backedOff(now) ? "[down until " + isoTime(ds.nextAttempt) +
+                                     ": " + ds.lastFailure + "] "
+                               : "[last failure " + ds.lastFailure + "] ";
   if (!rungs.empty())
     extra += "[retry" + rungs + "] ";
   // per-destination terminal sinks (object counts, like the global hold/failed

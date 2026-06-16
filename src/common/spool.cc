@@ -359,4 +359,16 @@ bool writeKeyValueCommitted(const Spool &sp, const KeyValueFile &kv,
   return true;
 }
 
+DestStatus readDestStatus(const Spool &sp, const std::string &dest) {
+  DestStatus st;
+  KeyValueFile kv;
+  std::string err;
+  if (!KeyValueFile::read(sp.routeStatus(dest), kv, err))
+    return st; // no status file => not present, not backed off
+  st.present = true;
+  st.nextAttempt = parseIsoTime(kv.get("next-attempt-after"));
+  st.lastFailure = kv.get("last-failure");
+  return st;
+}
+
 } // namespace dicomq

@@ -44,7 +44,6 @@
 #include <mach-o/dyld.h>
 #endif
 
-#include "common/kvfile.h"
 #include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
@@ -354,13 +353,8 @@ static void maybeTrigger(const std::string &dest) {
   if (pathExists(sp.routeHoldFlag(dest)))
     return;
 
-  std::string err;
-  KeyValueFile status;
-  if (KeyValueFile::read(sp.routeStatus(dest), status, err)) {
-    const time_t next = parseIsoTime(status.get("next-attempt-after"));
-    if (next != 0 && time(nullptr) < next)
-      return; // destination-level backoff (dead-site cache)
-  }
+  if (readDestStatus(sp, dest).backedOff(time(nullptr)))
+    return; // destination-level backoff (dead-site cache)
 
   if (destHasDueWork(dest, time(nullptr))) {
     const pid_t pid = spawn("dicomq-remote", {dest});

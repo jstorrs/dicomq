@@ -284,6 +284,24 @@ ID=$("$BIN/dicomq-inject" -c FWD -a MOD1 "$WORK/test.dcm")
 OUT=$("$BIN/dicomq-queue")
 check "queue shows the route backlog"      grep -q 'route/PACS1.*1 message' <<<"$OUT"
 check "queue shows the hold flag"          grep -q 'held' <<<"$OUT"
+
+# queue must not keep reporting a destination as "down" once its dead-site
+# backoff has elapsed — dicomq-send would already be retrying it (the status
+# file lingers until a successful association). Past next-attempt-after =>
+# "last failure"; future => "down until".
+printf 'last-failure: 2000-01-01T00:00:00Z connection refused\nfailures: 3\nnext-attempt-after: 2000-01-01T00:05:00Z\n' \
+  > "$DICOMQ_SPOOL/route/PACS1/status"
+PAST=$("$BIN/dicomq-queue")
+check_not "queue does not call an elapsed-backoff dest down" \
+      grep -q 'down until' <<<"$PAST"
+check "queue shows the last failure for a retry-eligible dest" \
+      grep -q 'last failure' <<<"$PAST"
+printf 'last-failure: 2000-01-01T00:00:00Z connection refused\nfailures: 3\nnext-attempt-after: 2999-01-01T00:00:00Z\n' \
+  > "$DICOMQ_SPOOL/route/PACS1/status"
+FUT=$("$BIN/dicomq-queue")
+check "queue reports a still-backed-off dest as down" \
+      grep -q 'down until' <<<"$FUT"
+rm -f "$DICOMQ_SPOOL/route/PACS1/status"
 check "queue lists messages per dest"      grep -q "^$ID " <<<"$("$BIN/dicomq-queue" PACS1)"
 check "queue listing shows the AETs"       grep -q 'MOD1 -> FWD' <<<"$("$BIN/dicomq-queue" PACS1)"
 "$BIN/dicomq-ctl" hold "$ID" >/dev/null

@@ -217,6 +217,26 @@ bool linkIdempotent(const std::string &from, const std::string &to,
 bool writeKeyValueCommitted(const Spool &sp, const KeyValueFile &kv,
                             const std::string &finalPath, std::string &err);
 
+// Dead-site backoff state from route/<DEST>/status: dicomq-remote writes it,
+// dicomq-send consumes it to skip a backed-off destination, and dicomq-queue
+// displays it. A single reader plus a single "currently backed off" rule
+// (backedOff) shared by both consumers, so the skip decision and the
+// operator-facing label can never disagree — e.g. queue must not keep calling a
+// destination "down" once its backoff has elapsed and send is retrying it.
+struct DestStatus {
+  bool present = false;    // a route/<DEST>/status file exists
+  time_t nextAttempt = 0;  // parsed next-attempt-after, 0 if absent/unparseable
+  std::string lastFailure; // the last-failure line, for display
+
+  // True iff the destination is still in backoff at `now` (dicomq-send skips
+  // triggering dicomq-remote until then).
+  bool backedOff(time_t now) const {
+    return present && nextAttempt != 0 && now < nextAttempt;
+  }
+};
+
+DestStatus readDestStatus(const Spool &sp, const std::string &dest);
+
 } // namespace dicomq
 
 #endif // DICOMQ_SPOOL_H
