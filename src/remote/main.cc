@@ -129,6 +129,13 @@ struct DeliveryResult {
 // fail (FailPermanent), not defer.
 static constexpr int kMaxPresentationContextID = 253;
 static constexpr size_t kMaxContexts = 127;
+// The two encode the same fact (the count of usable odd Uint8 ids), so pin
+// them together: a change to either that broke the identity would otherwise
+// let openAssociation propose more contexts than deliverMessage's defer-vs-fail
+// check accounts for, livelocking an over-budget message instead of failing it.
+static_assert(kMaxContexts == (kMaxPresentationContextID - 1) / 2 + 1,
+              "kMaxContexts must equal the number of usable presentation "
+              "context ids");
 
 static void logmsg(const std::string &m) {
   dicomq::logmsg("dicomq-remote: " + destName, m);

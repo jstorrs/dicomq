@@ -46,7 +46,11 @@ target_include_directories(dicomq-tls PUBLIC src)
 target_compile_features(dicomq-tls PUBLIC cxx_std_17)
 target_link_libraries(dicomq-tls PUBLIC DCMTK::dcmtls PRIVATE dicomq-common)
 
-foreach(prog recv send local remote clean inject queue ctl)
+# The eight programs, in one place: the build and install loops below both
+# iterate this list so they cannot drift (a new program is added once here).
+set(DICOMQ_PROGRAMS recv send local remote clean inject queue ctl)
+
+foreach(prog ${DICOMQ_PROGRAMS})
   add_executable(dicomq-${prog} src/${prog}/main.cc)
   target_link_libraries(dicomq-${prog} PRIVATE dicomq-common)
 endforeach()
@@ -64,7 +68,7 @@ target_link_libraries(dicomq-inject PRIVATE dicomq-dcm)
 target_link_libraries(dicomq-ctl PRIVATE dicomq-dcm)
 target_link_libraries(dicomq-queue PRIVATE dicomq-dcm)
 
-foreach(prog recv send local remote clean inject queue ctl)
+foreach(prog ${DICOMQ_PROGRAMS})
   install(TARGETS dicomq-${prog} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endforeach()
 
