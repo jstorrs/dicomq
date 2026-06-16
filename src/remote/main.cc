@@ -102,6 +102,31 @@ struct WorkItem {
   std::vector<Object> objects;
 };
 
+// What became of one message's delivery attempt. These outcomes are
+// mutually exclusive (a message is all-or-nothing), so the per-message loop
+// dispatches on one value rather than juggling parallel booleans.
+enum class Outcome {
+  Delivered,      // every object accepted -> complete/
+  Demote,         // a reachable destination rejected it -> next retry rung
+  Defer,          // our context budget didn't reach its SOP class this batch
+  FailPermanent,  // no retry can ever help -> straight to failed/
+  Quarantine,     // unreadable on load -> corrupt/
+  ConnectionBroke // mid-association failure -> destination state, stop here
+};
+struct DeliveryResult {
+  Outcome outcome;
+  std::string reason; // logged (or recorded, for ConnectionBroke); never stored
+};
+
+// The association carries at most 127 presentation contexts: ids are odd and
+// a Uint8, so 253 is the last usable id (255 + 2 would wrap to 1). With many
+// SOP classes in one run the budget can run out before every class gets a
+// context; classes left unproposed are normally DEFERRED, not failed (a
+// later, smaller batch will fit them). The exception is a single message that
+// on its own needs more than the budget — no later batch is smaller than one
+// message, so that one must fail (FailPermanent), not defer.
+static constexpr size_t kMaxContexts = 127;
+
 static void logmsg(const std::string &m) {
   std::fprintf(stderr, "dicomq-remote: %s: %s\n", destName.c_str(), m.c_str());
 }
@@ -187,45 +212,14 @@ static void demote(const WorkItem &w, const std::string &reason) {
     logmsg("demoted " + w.id + " but cannot remove source: " + err);
 }
 
-int main(int argc, char **argv) {
-  std::string spoolArg;
-  int opt;
-  while ((opt = getopt(argc, argv, "s:")) != -1) {
-    switch (opt) {
-    case 's':
-      spoolArg = optarg;
-      break;
-    default:
-      std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
-      return 100;
-    }
-  }
-  if (optind + 1 != argc) {
-    std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
-    return 100;
-  }
-  destName = argv[optind];
-  sp = Spool(spoolArg);
-
-  std::string err;
-  RemoteConfig cfg;
-  if (!RemoteConfig::load(sp.destDir(destName) + "/remote", cfg, err)) {
-    logmsg(err);
-    return 100;
-  }
-  ProposeProfile profile;
-  if (!ProposeProfile::load(sp.destDir(destName) + "/propose", profile, err)) {
-    logmsg(err);
-    return 100;
-  }
-  const std::string callingAET =
-      cfg.callingAET.empty() ? "DICOMQ" : cfg.callingAET;
-
-  // gather due work across todo/ (always due) and every retry/<k> rung,
-  // reading each message's routing fields from its file-meta header
+// Gather every due message across todo/ (always due) and each retry/<k> rung,
+// reading the routing fields each object needs from its file-meta header.
+// An unreadable message is quarantined here; an empty sealed batch is dropped
+// quietly. Fills sopClasses with every SOP class seen (the context budget).
+static std::vector<WorkItem> gatherDueWork(std::set<std::string> &sopClasses) {
   const time_t now = time(nullptr);
   std::vector<WorkItem> work;
-  std::set<std::string> sopClasses;
+  std::string err;
 
   // read the routing fields one object needs from its file-meta header
   auto readObjectMeta = [](const std::string &path, Object &obj) -> bool {
@@ -236,7 +230,9 @@ int main(int argc, char **argv) {
     return true;
   };
 
-  auto gather = [&](const std::string &dir, int level) {
+  for (const auto &d : routeQueueDirs(sp, destName)) {
+    const std::string &dir = d.first;
+    const int level = d.second;
     for (const auto &msg : listMessages(dir)) {
       if (!messageDue(dir, msg.id, level, now, msg.isBatch))
         continue; // attempted and still backing off
@@ -280,9 +276,243 @@ int main(int argc, char **argv) {
         sopClasses.insert(o.sopClass);
       work.push_back(std::move(item));
     }
-  };
-  for (const auto &d : routeQueueDirs(sp, destName))
-    gather(d.first, d.second);
+  }
+  return work;
+}
+
+// Build presentation contexts and request the association. proposeTS is the
+// configured syntaxes, or — when the profile lists none — every stored syntax
+// seen in this run plus the two uncompressed defaults. One context per (SOP
+// class, transfer syntax) gives precise control over what an accepted context
+// implies. On failure this records the connection failure and returns nullptr;
+// on success it returns the open association and fills proposedSops with the
+// SOP classes that actually got a context (the rest are deferred, not failed).
+static T_ASC_Association *
+openAssociation(T_ASC_Network *net, const RemoteConfig &cfg,
+                const std::string &callingAET, const ProposeProfile &profile,
+                const std::vector<WorkItem> &work,
+                const std::set<std::string> &sopClasses, bool useTLS,
+                std::set<std::string> &proposedSops) {
+  std::vector<std::string> proposeTS = profile.transferSyntaxes;
+  if (proposeTS.empty()) {
+    for (const auto &w : work)
+      for (const auto &o : w.objects) {
+        bool seen = false;
+        for (const auto &p : proposeTS)
+          seen = seen || p == o.xferUID;
+        if (!seen && !o.xferUID.empty())
+          proposeTS.push_back(o.xferUID);
+      }
+    proposeTS.push_back(UID_LittleEndianExplicitTransferSyntax);
+    proposeTS.push_back(UID_LittleEndianImplicitTransferSyntax);
+  }
+
+  T_ASC_Parameters *params = nullptr;
+  ASC_createAssociationParameters(&params, ASC_DEFAULTMAXPDU,
+                                  30 /* TCP connect timeout, seconds */);
+  ASC_setAPTitles(params, callingAET.c_str(), cfg.aet.c_str(), nullptr);
+  char localHost[256] = {0}; // POSIX leaves the result unterminated on
+  gethostname(localHost, sizeof(localHost) - 1); // truncation; pre-NUL it
+  const std::string peer = cfg.host + ":" + std::to_string(cfg.port);
+  ASC_setPresentationAddresses(params, localHost, peer.c_str());
+  if (useTLS)
+    ASC_setTransportLayerType(params, OFTrue);
+
+  // Spend the context budget (see kMaxContexts): ids are odd and a Uint8, so
+  // 253 is the last usable one. Remember which classes we proposed so the
+  // delivery loop can tell "we never proposed this class" (defer) from "the
+  // destination refused a class we did propose" (a real rejection).
+  T_ASC_PresentationContextID pid = 1;
+  for (const auto &sop : sopClasses) {
+    if (pid > 253)
+      break; // context budget reached; remaining classes deferred
+    for (const auto &ts : proposeTS) {
+      if (pid > 253)
+        break;
+      const char *tsArr[] = {ts.c_str()};
+      ASC_addPresentationContext(params, pid, sop.c_str(), tsArr, 1);
+      proposedSops.insert(sop);
+      pid += 2;
+    }
+  }
+
+  T_ASC_Association *assoc = nullptr;
+  const OFCondition cond = ASC_requestAssociation(net, params, &assoc);
+  if (cond.bad() || ASC_countAcceptedPresentationContexts(params) == 0) {
+    recordConnectionFailure(cond.bad() ? cond.text()
+                                       : "no presentation context accepted");
+    if (assoc) {
+      ASC_abortAssociation(assoc);
+      ASC_destroyAssociation(&assoc);
+    }
+    return nullptr;
+  }
+  return assoc;
+}
+
+// Try to C-STORE every object of one message over the open association.
+// Performs NO filesystem moves and records NO status — it only reports what
+// happened, and the caller acts on the Outcome. A message is all-or-nothing:
+// the first object that cannot be sent decides the whole message's fate (the
+// destination dedups any objects it already received on SOP Instance UID).
+static DeliveryResult
+deliverMessage(T_ASC_Association *assoc, const WorkItem &item,
+               const ProposeProfile &profile,
+               const std::set<std::string> &proposedSops) {
+  // Contexts this message needs ON ITS OWN (so the defer-vs-fail decision does
+  // not depend on what else shares this run): one per (distinct SOP class x
+  // proposed syntax). proposeTS is fixed when the profile lists syntaxes;
+  // otherwise it is the message's own syntaxes plus the two uncompressed
+  // defaults, mirroring how openAssociation builds proposeTS.
+  std::set<std::string> itemSops, itemTs;
+  for (const auto &o : item.objects)
+    itemSops.insert(o.sopClass);
+  if (!profile.transferSyntaxes.empty()) {
+    itemTs.insert(profile.transferSyntaxes.begin(),
+                  profile.transferSyntaxes.end());
+  } else {
+    for (const auto &o : item.objects)
+      if (!o.xferUID.empty())
+        itemTs.insert(o.xferUID);
+    itemTs.insert(UID_LittleEndianExplicitTransferSyntax);
+    itemTs.insert(UID_LittleEndianImplicitTransferSyntax);
+  }
+  const bool itemCannotFit = itemSops.size() * itemTs.size() > kMaxContexts;
+
+  for (const auto &obj : item.objects) {
+    DcmFileFormat ff;
+    OFCondition cond = ff.loadFile(obj.path.c_str());
+    if (cond.bad())
+      return {Outcome::Quarantine, cond.text()};
+    DcmDataset *dataset = ff.getDataset();
+    const DcmXfer objXfer(dataset->getOriginalXfer());
+
+    // Note: the 3-arg lookup FALLS BACK to any context for the abstract
+    // syntax when no exact transfer syntax match exists, so the accepted
+    // TS must be compared explicitly — DIMSE_storeUser would otherwise
+    // convert silently, bypassing the transcode policy.
+    T_ASC_PresentationContextID presID = ASC_findAcceptedPresentationContextID(
+        assoc, obj.sopClass.c_str(), objXfer.getXferID());
+    if (presID == 0)
+      presID =
+          ASC_findAcceptedPresentationContextID(assoc, obj.sopClass.c_str());
+    if (presID == 0) {
+      // No usable context. Distinguish our own context-budget limit (we never
+      // proposed this class — defer so a later batch carries it; a deferral
+      // must not consume a retry rung) from a destination that refused a class
+      // we did propose (a real, permanent rejection).
+      if (proposedSops.count(obj.sopClass) == 0) {
+        if (itemCannotFit)
+          // Even alone this message needs more contexts than fit; no later
+          // batch is smaller than one message, so deferring would livelock.
+          // This is structural, not transient — fail it outright rather than
+          // climb the retry ladder, which exists for transient problems.
+          return {Outcome::FailPermanent,
+                  "needs " + std::to_string(itemSops.size() * itemTs.size()) +
+                      " presentation contexts (" +
+                      std::to_string(itemSops.size()) + " SOP classes x " +
+                      std::to_string(itemTs.size()) + " syntaxes), over the " +
+                      std::to_string(kMaxContexts) +
+                      "-context association limit"};
+        return {Outcome::Defer, "presentation-context budget exhausted, " +
+                                    obj.sopClass + " not proposed this batch"};
+      }
+      return {Outcome::Demote,
+              "no presentation context accepted for " + obj.sopClass};
+    }
+    T_ASC_PresentationContext pc;
+    ASC_findAcceptedPresentationContext(assoc->params, presID, &pc);
+    if (strcmp(pc.acceptedTransferSyntax, objXfer.getXferID()) != 0) {
+      // stored syntax not accepted: transcode or fail, per policy
+      if (profile.transcode == ProposeProfile::Transcode::Never)
+        return {Outcome::Demote, std::string("stored syntax ") +
+                                     objXfer.getXferID() +
+                                     " not accepted and transcode is 'never'"};
+      if (profile.transcode == ProposeProfile::Transcode::Lossless &&
+          isLossyTransferSyntaxUID(pc.acceptedTransferSyntax))
+        return {Outcome::Demote, std::string("accepted syntax ") +
+                                     pc.acceptedTransferSyntax +
+                                     " is lossy and transcode is 'lossless'"};
+      const DcmXfer target(pc.acceptedTransferSyntax);
+      const OFCondition xc =
+          dataset->chooseRepresentation(target.getXfer(), nullptr);
+      if (xc.bad() || !dataset->canWriteXfer(target.getXfer()))
+        return {Outcome::Demote,
+                std::string("cannot transcode ") + objXfer.getXferID() +
+                    " -> " + target.getXferID() +
+                    (xc.bad() ? std::string(": ") + xc.text() : "")};
+    }
+
+    T_DIMSE_C_StoreRQ req;
+    memset(&req, 0, sizeof(req));
+    req.MessageID = assoc->nextMsgID++;
+    OFStandard::strlcpy(req.AffectedSOPClassUID, obj.sopClass.c_str(),
+                        sizeof(req.AffectedSOPClassUID));
+    OFStandard::strlcpy(req.AffectedSOPInstanceUID, obj.sopInstance.c_str(),
+                        sizeof(req.AffectedSOPInstanceUID));
+    req.DataSetType = DIMSE_DATASET_PRESENT;
+    req.Priority = DIMSE_PRIORITY_MEDIUM;
+
+    T_DIMSE_C_StoreRSP rsp;
+    memset(&rsp, 0, sizeof(rsp));
+    DcmDataset *statusDetail = nullptr;
+    cond = DIMSE_storeUser(assoc, presID, &req, nullptr, dataset, nullptr,
+                           nullptr, DIMSE_BLOCKING, 0, &rsp, &statusDetail);
+    delete statusDetail;
+
+    if (cond.bad())
+      // mid-association breakage is destination state; messages stay where
+      // they are so nothing is double-penalized
+      return {Outcome::ConnectionBroke, cond.text()};
+    if (rsp.DimseStatus != STATUS_Success &&
+        (rsp.DimseStatus & 0xf000) != 0xB000) // warnings are delivered
+    {
+      char status[16];
+      snprintf(status, sizeof(status), "0x%04x", rsp.DimseStatus);
+      return {Outcome::Demote, std::string("rejected ") + status};
+    }
+  }
+  return {Outcome::Delivered, ""};
+}
+
+int main(int argc, char **argv) {
+  std::string spoolArg;
+  int opt;
+  while ((opt = getopt(argc, argv, "s:")) != -1) {
+    switch (opt) {
+    case 's':
+      spoolArg = optarg;
+      break;
+    default:
+      std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
+      return 100;
+    }
+  }
+  if (optind + 1 != argc) {
+    std::fprintf(stderr, "usage: dicomq-remote [-s <spool>] <DEST>\n");
+    return 100;
+  }
+  destName = argv[optind];
+  sp = Spool(spoolArg);
+
+  std::string err;
+  RemoteConfig cfg;
+  if (!RemoteConfig::load(sp.destDir(destName) + "/remote", cfg, err)) {
+    logmsg(err);
+    return 100;
+  }
+  ProposeProfile profile;
+  if (!ProposeProfile::load(sp.destDir(destName) + "/propose", profile, err)) {
+    logmsg(err);
+    return 100;
+  }
+  const std::string callingAET =
+      cfg.callingAET.empty() ? "DICOMQ" : cfg.callingAET;
+
+  // gather due work across todo/ and every retry/<k> rung, reading each
+  // message's routing fields from its file-meta header
+  std::set<std::string> sopClasses;
+  std::vector<WorkItem> work = gatherDueWork(sopClasses);
   if (work.empty())
     return 0;
 
@@ -333,250 +563,56 @@ int main(int argc, char **argv) {
     }
   }
 
-  T_ASC_Parameters *params = nullptr;
-  ASC_createAssociationParameters(&params, ASC_DEFAULTMAXPDU,
-                                  30 /* TCP connect timeout, seconds */);
-  ASC_setAPTitles(params, callingAET.c_str(), cfg.aet.c_str(), nullptr);
-  char localHost[256] = {0}; // POSIX leaves the result unterminated on
-  gethostname(localHost, sizeof(localHost) - 1); // truncation; pre-NUL it
-  const std::string peer = cfg.host + ":" + std::to_string(cfg.port);
-  ASC_setPresentationAddresses(params, localHost, peer.c_str());
-  if (useTLS)
-    ASC_setTransportLayerType(params, OFTrue);
-
-  // one context per (SOP class, transfer syntax): precise control over
-  // what an accepted context implies
-  std::vector<std::string> proposeTS = profile.transferSyntaxes;
-  if (proposeTS.empty()) {
-    for (const auto &w : work)
-      for (const auto &o : w.objects) {
-        bool seen = false;
-        for (const auto &p : proposeTS)
-          seen = seen || p == o.xferUID;
-        if (!seen && !o.xferUID.empty())
-          proposeTS.push_back(o.xferUID);
-      }
-    proposeTS.push_back(UID_LittleEndianExplicitTransferSyntax);
-    proposeTS.push_back(UID_LittleEndianImplicitTransferSyntax);
-  }
-  // The association carries at most 127 presentation contexts: ids are odd
-  // and a Uint8, so 253 is the last usable id (255 + 2 would wrap to 1).
-  // With many SOP classes in one run the budget can run out before every
-  // class gets a context; classes left unproposed are normally DEFERRED, not
-  // failed (a later, smaller batch will fit them), so remember which classes
-  // we actually proposed. The exception is a single message that on its own
-  // needs more than the budget (kMaxContexts) — no later batch is smaller
-  // than one message, so that one must fail, not defer (handled below).
-  constexpr size_t kMaxContexts = 127;
   std::set<std::string> proposedSops;
-  T_ASC_PresentationContextID pid = 1;
-  for (const auto &sop : sopClasses) {
-    if (pid > 253)
-      break; // context budget reached; remaining classes deferred
-    for (const auto &ts : proposeTS) {
-      if (pid > 253)
-        break;
-      const char *tsArr[] = {ts.c_str()};
-      ASC_addPresentationContext(params, pid, sop.c_str(), tsArr, 1);
-      proposedSops.insert(sop);
-      pid += 2;
-    }
-  }
-
-  T_ASC_Association *assoc = nullptr;
-  cond = ASC_requestAssociation(net, params, &assoc);
-  if (cond.bad() || ASC_countAcceptedPresentationContexts(params) == 0) {
-    recordConnectionFailure(cond.bad() ? cond.text()
-                                       : "no presentation context accepted");
-    if (assoc) {
-      ASC_abortAssociation(assoc);
-      ASC_destroyAssociation(&assoc);
-    }
+  T_ASC_Association *assoc = openAssociation(
+      net, cfg, callingAET, profile, work, sopClasses, useTLS, proposedSops);
+  if (!assoc) {
     ASC_dropNetwork(&net);
-    return 0;
+    return 0; // connection failure already recorded as destination state
   }
 
   bool connectionBroke = false;
   for (const auto &item : work) {
-    // A message delivers all-or-nothing: every object goes over this one
-    // association. A single object that is rejected or impossible to send
-    // demotes the whole message; an object whose SOP class we never got to
-    // propose defers the whole message to a later, smaller batch; an
-    // object that cannot be loaded quarantines the whole message. The
-    // destination dedups any objects of the message it already received.
-    bool itemFailed = false, deferItem = false, quarantined = false;
-    bool failPermanent = false; // structural impossibility: skip the retry
-                                // ladder, go straight to failed/
-    std::string failReason;
-
-    // Contexts this message needs ON ITS OWN (so the defer-vs-fail decision
-    // does not depend on what else shares this run): one per (distinct SOP
-    // class x proposed syntax). proposeTS is fixed when the profile lists
-    // syntaxes; otherwise it is the message's own syntaxes plus the two
-    // uncompressed defaults, mirroring how proposeTS is built above.
-    std::set<std::string> itemSops, itemTs;
-    for (const auto &o : item.objects)
-      itemSops.insert(o.sopClass);
-    if (!profile.transferSyntaxes.empty()) {
-      itemTs.insert(profile.transferSyntaxes.begin(),
-                    profile.transferSyntaxes.end());
-    } else {
-      for (const auto &o : item.objects)
-        if (!o.xferUID.empty())
-          itemTs.insert(o.xferUID);
-      itemTs.insert(UID_LittleEndianExplicitTransferSyntax);
-      itemTs.insert(UID_LittleEndianImplicitTransferSyntax);
-    }
-    const bool itemCannotFit = itemSops.size() * itemTs.size() > kMaxContexts;
-
-    for (const auto &obj : item.objects) {
-      DcmFileFormat ff;
-      cond = ff.loadFile(obj.path.c_str());
-      if (cond.bad()) {
-        logmsg("quarantining " + item.id + ": " + cond.text());
-        if (!sinkMessage(sp.routeCorrupt(destName), item.dir, item.id,
-                         item.isBatch, err))
-          logmsg("cannot quarantine " + item.id + ": " + err);
-        quarantined = true;
-        break;
-      }
-      DcmDataset *dataset = ff.getDataset();
-      const DcmXfer objXfer(dataset->getOriginalXfer());
-
-      // Note: the 3-arg lookup FALLS BACK to any context for the abstract
-      // syntax when no exact transfer syntax match exists, so the accepted
-      // TS must be compared explicitly — DIMSE_storeUser would otherwise
-      // convert silently, bypassing the transcode policy.
-      T_ASC_PresentationContextID presID =
-          ASC_findAcceptedPresentationContextID(assoc, obj.sopClass.c_str(),
-                                                objXfer.getXferID());
-      if (presID == 0)
-        presID =
-            ASC_findAcceptedPresentationContextID(assoc, obj.sopClass.c_str());
-      if (presID == 0) {
-        // No usable context. Distinguish our own context-budget limit (we
-        // never proposed this class — defer so a later batch carries it; a
-        // deferral must not consume a retry rung) from a destination that
-        // refused a class we did propose (a real, permanent rejection).
-        if (proposedSops.count(obj.sopClass) == 0) {
-          if (itemCannotFit) {
-            // Even alone this message needs more contexts than fit; no later
-            // batch is smaller than one message, so deferring would livelock.
-            // This is structural, not transient — fail it outright rather than
-            // climb the retry ladder, which exists for transient problems.
-            failPermanent = true;
-            failReason =
-                "needs " + std::to_string(itemSops.size() * itemTs.size()) +
-                " presentation contexts (" + std::to_string(itemSops.size()) +
-                " SOP classes x " + std::to_string(itemTs.size()) +
-                " syntaxes), over the " + std::to_string(kMaxContexts) +
-                "-context association limit";
-          } else {
-            logmsg("deferred " + item.id +
-                   ": presentation-context budget "
-                   "exhausted, " +
-                   obj.sopClass + " not proposed this batch");
-            deferItem = true;
-          }
-        } else {
-          itemFailed = true;
-          failReason = "no presentation context accepted for " + obj.sopClass;
-        }
-        break;
-      }
-      T_ASC_PresentationContext pc;
-      ASC_findAcceptedPresentationContext(assoc->params, presID, &pc);
-      if (strcmp(pc.acceptedTransferSyntax, objXfer.getXferID()) != 0) {
-        // stored syntax not accepted: transcode or fail, per policy
-        if (profile.transcode == ProposeProfile::Transcode::Never) {
-          itemFailed = true;
-          failReason = std::string("stored syntax ") + objXfer.getXferID() +
-                       " not accepted and transcode is 'never'";
-          break;
-        }
-        if (profile.transcode == ProposeProfile::Transcode::Lossless &&
-            isLossyTransferSyntaxUID(pc.acceptedTransferSyntax)) {
-          itemFailed = true;
-          failReason = std::string("accepted syntax ") +
-                       pc.acceptedTransferSyntax +
-                       " is lossy and transcode is 'lossless'";
-          break;
-        }
-        const DcmXfer target(pc.acceptedTransferSyntax);
-        const OFCondition xc =
-            dataset->chooseRepresentation(target.getXfer(), nullptr);
-        if (xc.bad() || !dataset->canWriteXfer(target.getXfer())) {
-          itemFailed = true;
-          failReason = std::string("cannot transcode ") + objXfer.getXferID() +
-                       " -> " + target.getXferID() +
-                       (xc.bad() ? std::string(": ") + xc.text() : "");
-          break;
-        }
-      }
-
-      T_DIMSE_C_StoreRQ req;
-      memset(&req, 0, sizeof(req));
-      req.MessageID = assoc->nextMsgID++;
-      OFStandard::strlcpy(req.AffectedSOPClassUID, obj.sopClass.c_str(),
-                          sizeof(req.AffectedSOPClassUID));
-      OFStandard::strlcpy(req.AffectedSOPInstanceUID, obj.sopInstance.c_str(),
-                          sizeof(req.AffectedSOPInstanceUID));
-      req.DataSetType = DIMSE_DATASET_PRESENT;
-      req.Priority = DIMSE_PRIORITY_MEDIUM;
-
-      T_DIMSE_C_StoreRSP rsp;
-      memset(&rsp, 0, sizeof(rsp));
-      DcmDataset *statusDetail = nullptr;
-      cond = DIMSE_storeUser(assoc, presID, &req, nullptr, dataset, nullptr,
-                             nullptr, DIMSE_BLOCKING, 0, &rsp, &statusDetail);
-      delete statusDetail;
-
-      if (cond.bad()) {
-        // mid-association breakage is destination state; messages stay
-        // where they are so nothing is double-penalized
-        recordConnectionFailure(cond.text());
-        connectionBroke = true;
-        break;
-      }
-      if (rsp.DimseStatus != STATUS_Success &&
-          (rsp.DimseStatus & 0xf000) != 0xB000) // warnings are delivered
-      {
-        char status[16];
-        snprintf(status, sizeof(status), "0x%04x", rsp.DimseStatus);
-        logmsg(item.id + " rejected with status " + status);
-        itemFailed = true;
-        failReason = std::string("rejected ") + status;
-        break;
-      }
-    }
-
-    if (connectionBroke)
+    const DeliveryResult r = deliverMessage(assoc, item, profile, proposedSops);
+    switch (r.outcome) {
+    case Outcome::ConnectionBroke:
+      recordConnectionFailure(r.reason);
+      connectionBroke = true;
       break;
-    if (quarantined)
-      continue; // the whole message was moved to corrupt/
-    if (deferItem)
-      continue; // left in place for a later batch
-    if (failPermanent) {
-      // a permanent impossibility: no retry will ever help, so move straight
-      // to failed/ instead of consuming the (transient-problem) retry ladder
-      logmsg("failing " + item.id + ": " + failReason);
+    case Outcome::Quarantine:
+      logmsg("quarantining " + item.id + ": " + r.reason);
+      if (!sinkMessage(sp.routeCorrupt(destName), item.dir, item.id,
+                       item.isBatch, err))
+        logmsg("cannot quarantine " + item.id + ": " + err);
+      break;
+    case Outcome::Defer:
+      logmsg("deferred " + item.id + ": " + r.reason);
+      break; // left in place for a later, smaller batch
+    case Outcome::FailPermanent:
+      // no retry will ever help, so move straight to failed/ instead of
+      // consuming the (transient-problem) retry ladder
+      logmsg("failing " + item.id + ": " + r.reason);
       if (!sinkMessage(sp.routeFailed(destName), item.dir, item.id,
                        item.isBatch, err))
         logmsg("cannot fail " + item.id + ": " + err);
-      continue;
+      break;
+    case Outcome::Demote:
+      demote(item, r.reason);
+      break;
+    case Outcome::Delivered:
+      if (!sinkMessage(sp.routeComplete(destName), item.dir, item.id,
+                       item.isBatch, err))
+        logmsg("delivered " + item.id +
+               " but cannot move to complete/: " + err);
+      else
+        logmsg("delivered " + item.id +
+               (item.isBatch
+                    ? " (" + std::to_string(item.objects.size()) + " objects)"
+                    : ""));
+      break;
     }
-    if (itemFailed) {
-      demote(item, failReason);
-      continue;
-    }
-    if (!sinkMessage(sp.routeComplete(destName), item.dir, item.id,
-                     item.isBatch, err))
-      logmsg("delivered " + item.id + " but cannot move to complete/: " + err);
-    else
-      logmsg("delivered " + item.id +
-             (item.isBatch
-                  ? " (" + std::to_string(item.objects.size()) + " objects)"
-                  : ""));
+    if (connectionBroke)
+      break;
   }
 
   if (!connectionBroke) {
