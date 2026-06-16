@@ -65,15 +65,18 @@ Three workflows, all on push / PR / manual dispatch:
   for the test-peer tools (`storescu`/`storescp`/`dcmdump`/`dump2dcm`),
   whose version is irrelevant.
 - **Build only the modules dicomq links.** The Linux DCMTK build passes
-  `-DDCMTK_MODULES="ofstd;oflog;oficonv;dcmdata;dcmimgle;dcmimage;dcmjpeg;dcmjpls;dcmnet;dcmtls"`.
+  `-DDCMTK_MODULES=` the `DCMTK_MODULES` job-level env in `linux.yml`
+  (`ofstd;oflog;oficonv;dcmdata;dcmimgle;dcmimage;dcmjpeg;dcmjpls;dcmnet;dcmtls`).
   `BUILD_APPS=OFF` alone does **not** stop module compilation — without
   `DCMTK_MODULES` the build also compiles `dcmrt` (hundreds of files),
   `dcmiod`, `dcmwlm`, `dcmqrdb`, … and times out. This list is the
-  closure of what dicomq links; if a link target is added, extend it.
-- **DCMTK build is cached** keyed on version + module set, via
-  `cache/restore` + `cache/save` (`if: always()`) so it survives even a
-  later step failing. Bump the cache key whenever `DCMTK_VERSION` or the
-  module list changes.
+  closure of what dicomq links; if a link target is added, extend the
+  `DCMTK_MODULES` env (the one source of truth).
+- **DCMTK build is cached** via `cache/restore` + `cache/save`
+  (`if: always()`) so it survives even a later step failing. The cache key
+  folds in `DCMTK_VERSION` and `hashFiles('.github/workflows/linux.yml')`,
+  so editing the version or module list **auto-invalidates** the cache — no
+  manual key bump needed (any edit to the workflow does it).
 - **macOS clang-tidy is pinned to `llvm@21`** and passed
   `-isysroot $(xcrun --show-sdk-path)` — brew's clang-tidy does not
   inherit AppleClang's implicit macOS SDK header search and otherwise
