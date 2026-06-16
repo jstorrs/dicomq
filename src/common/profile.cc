@@ -4,9 +4,9 @@
 #include "common/profile.h"
 
 #include "common/kvfile.h"
+#include "common/spool.h" // parseWholeInt
 
 #include <cerrno>
-#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -15,21 +15,6 @@
 namespace dicomq {
 
 namespace fs = std::filesystem;
-
-// Parse an integer that must consume the WHOLE token. Operator-facing config
-// values go through this rather than atoi/atol, which silently accept trailing
-// garbage ("30x" -> 30, "5400junk" -> 5400) and so would mask typos. Returns
-// false on empty, malformed, partial, or out-of-range input.
-static bool parseWholeInt(const std::string &s, long &out) {
-  const char *begin = s.data();
-  const char *end = begin + s.size();
-  long value = 0;
-  const auto res = std::from_chars(begin, end, value);
-  if (res.ec != std::errc() || res.ptr != end)
-    return false;
-  out = value;
-  return true;
-}
 
 // Shared line reader for profile files: strips comments, trims
 // whitespace, and skips blank lines. A '#' at line start or preceded by

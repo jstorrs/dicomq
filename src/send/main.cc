@@ -364,8 +364,7 @@ int main(int argc, char **argv) {
     if (a == "-s" && i + 1 < argc)
       spoolArg = argv[++i];
     else if (a == "-i" && i + 1 < argc) {
-      interval = atol(argv[++i]);
-      if (interval <= 0) {
+      if (!parseWholeInt(argv[++i], interval) || interval <= 0) {
         std::fprintf(stderr,
                      "dicomq-send: -i must be a positive number of seconds\n");
         return 100;

@@ -124,6 +124,13 @@ time_t parseIsoTime(const std::string &s);
 // Free bytes on the filesystem holding path, or -1.
 long long freeBytes(const std::string &path);
 
+// Parse an integer that must consume the WHOLE token. Use for operator-facing
+// numeric input (config values, CLI flags) rather than atoi/atol, which
+// silently accept trailing garbage ("30x" -> 30, "36h" -> 36) and so mask
+// typos. Returns false on empty, malformed, partial, or out-of-range input;
+// the caller still range-checks the value (e.g. non-negative, 1..65535).
+bool parseWholeInt(const std::string &s, long &out);
+
 // Filesystem predicates: pathExists is any stat-able entry; isDir is a
 // directory. Both report false (never an error) for a missing path.
 bool pathExists(const std::string &path);

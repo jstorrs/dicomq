@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -304,6 +305,17 @@ long long freeBytes(const std::string &path) {
   if (statvfs(path.c_str(), &vfs) != 0)
     return -1;
   return static_cast<long long>(vfs.f_bavail) * vfs.f_frsize;
+}
+
+bool parseWholeInt(const std::string &s, long &out) {
+  const char *begin = s.data();
+  const char *end = begin + s.size();
+  long value = 0;
+  const auto res = std::from_chars(begin, end, value);
+  if (res.ec != std::errc() || res.ptr != end)
+    return false;
+  out = value;
+  return true;
 }
 
 bool pathExists(const std::string &path) {

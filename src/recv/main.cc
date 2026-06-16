@@ -343,15 +343,16 @@ int main(int argc, char **argv) {
     if (a == "-s" && i + 1 < argc)
       spoolArg = argv[++i];
     else if (a == "-w" && i + 1 < argc) {
-      const long long mb = atoll(argv[++i]);
-      if (mb < 0) {
-        std::fprintf(stderr, "dicomq-recv: -w must not be negative\n");
+      long mb = 0;
+      if (!parseWholeInt(argv[++i], mb) || mb < 0) {
+        std::fprintf(stderr,
+                     "dicomq-recv: -w must be a non-negative number of MB\n");
         return 100;
       }
-      watermarkBytes = mb * 1024 * 1024;
+      watermarkBytes = static_cast<long long>(mb) * 1024 * 1024;
     } else if (a == "--listen" && i + 1 < argc) {
-      listenPort = atol(argv[++i]);
-      if (listenPort < 1 || listenPort > 65535) {
+      if (!parseWholeInt(argv[++i], listenPort) || listenPort < 1 ||
+          listenPort > 65535) {
         std::fprintf(stderr, "dicomq-recv: --listen port must be 1..65535\n");
         return 100;
       }

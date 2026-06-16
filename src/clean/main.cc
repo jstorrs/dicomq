@@ -117,10 +117,16 @@ int main(int argc, char **argv) {
       spoolArg = optarg;
       break;
     case 'g':
-      graceHours = atol(optarg);
+      if (!parseWholeInt(optarg, graceHours)) {
+        std::fprintf(stderr, "dicomq-clean: -g must be a number of hours\n");
+        return 100;
+      }
       break;
     case 'G':
-      completeGraceHours = atol(optarg);
+      if (!parseWholeInt(optarg, completeGraceHours)) {
+        std::fprintf(stderr, "dicomq-clean: -G must be a number of hours\n");
+        return 100;
+      }
       break;
     default:
       std::fprintf(stderr,
