@@ -317,6 +317,24 @@ check "ctl fail logs the reason"         grep -q 'operator says no' <<<"$FOUT"
 check "ctl requeue returns it to its AET queue" test -f "$DICOMQ_SPOOL/queue/todo/FWD/$ID.dcm"
 check_not "ctl refuses an unknown id"    "$BIN/dicomq-ctl" hold 19990101000000000.0.000000
 
+# an unreadable queue directory must not pass silently as "no work": the
+# listing helpers report a real error (EACCES) but stay quiet for a merely
+# absent directory ("missing dir = empty"). chmod 000 has no effect as root.
+new_spool
+mkdir -p "$DICOMQ_SPOOL/dest/PACS1" "$DICOMQ_SPOOL/route/PACS1/todo"
+CLEANOUT=$("$BIN/dicomq-queue" 2>&1 >/dev/null)
+check "absent dirs produce no spurious diagnostics" \
+      test -z "$CLEANOUT"
+if [ "$(id -u)" != 0 ]; then
+  chmod 000 "$DICOMQ_SPOOL/route/PACS1/todo"
+  DERR=$("$BIN/dicomq-queue" PACS1 2>&1 >/dev/null)
+  chmod 755 "$DICOMQ_SPOOL/route/PACS1/todo"   # restore so cleanup can rm it
+  check "an unreadable queue dir is reported, not silently empty" \
+        grep -qi 'cannot read directory' <<<"$DERR"
+else
+  echo "skip - unreadable-dir diagnostic (running as root)"
+fi
+
 # --- recv (needs storescu/echoscu on PATH) --------------------------------
 if command -v storescu >/dev/null; then
   PORT=11177

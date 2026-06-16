@@ -15,6 +15,8 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <set>
+#include <system_error>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -193,10 +195,25 @@ bool hasDcmSuffix(const std::string &name) {
   return name.size() > 4 && name.compare(name.size() - 4, 4, ".dcm") == 0;
 }
 
+// A missing directory is legitimately empty (every queue walker relies on
+// this), so it stays silent. Any OTHER iteration failure — EACCES, EIO,
+// ENOTDIR — would otherwise read as "no work" and hide a sick spool, so report
+// it on stderr. Deduplicated per (path, error) because the queue runner rescans
+// every interval and must not spam a persistent permission problem.
+static void reportDirError(const std::string &dir, const std::error_code &ec) {
+  if (!ec || ec == std::errc::no_such_file_or_directory)
+    return;
+  static std::set<std::string> reported;
+  if (reported.insert(dir + '\0' + ec.message()).second)
+    logmsg("dicomq", "cannot read directory '" + dir + "': " + ec.message());
+}
+
 std::vector<std::string> listIds(const std::string &dir) {
   std::vector<std::string> ids;
   std::error_code ec;
-  for (const auto &entry : fs::directory_iterator(dir, ec)) {
+  fs::directory_iterator it(dir, ec);
+  reportDirError(dir, ec); // capture the construction error before the loop
+  for (const auto &entry : it) {
     const std::string name = entry.path().filename().string();
     if (hasDcmSuffix(name))
       ids.push_back(name.substr(0, name.size() - 4));
@@ -208,8 +225,11 @@ std::vector<std::string> listIds(const std::string &dir) {
 std::vector<std::string> listSubdirs(const std::string &dir) {
   std::vector<std::string> names;
   std::error_code ec;
-  for (const auto &entry : fs::directory_iterator(dir, ec)) {
-    if (entry.is_directory(ec))
+  fs::directory_iterator it(dir, ec);
+  reportDirError(dir, ec);
+  for (const auto &entry : it) {
+    std::error_code dec; // per-entry; keep it off the construction error above
+    if (entry.is_directory(dec))
       names.push_back(entry.path().filename().string());
   }
   std::sort(names.begin(), names.end());
