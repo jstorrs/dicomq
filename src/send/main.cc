@@ -296,6 +296,17 @@ static void processMessage(const std::string &aet, const Message &msg) {
     } else {
       const int rc = runChild("dicomq-local",
                               {id, resolveMaildir(aetDir, in.arg), srcDir});
+      if (rc == 100) {
+        // permanent failure (a different object already holds the maildir
+        // slot, or a bad invocation): re-running cannot help, so escalate to
+        // failed/ rather than re-attempt every scan, mirroring the unknown-AET
+        // path above. dicomq-local logged the specific reason to stderr.
+        logmsg("failing " + id + ": dicomq-local reported a permanent failure");
+        if (!mkdirIfMissing(sp.failedDir(), err) ||
+            !moveMessage(srcDir, sp.failedDir(), id, err, batch))
+          logmsg("cannot fail " + id + ": " + err);
+        return;
+      }
       if (rc != 0) {
         logmsg("deferring " + id + ": dicomq-local exited " +
                std::to_string(rc));

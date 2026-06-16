@@ -269,7 +269,13 @@ DICOM — the called AET is the subdirectory name):
 1. look up `aet/<AET>/deliver`
 2. for each `forward <DEST>` instruction: `link` the object into
    `route/<DEST>/todo/` (`EEXIST` = already routed = success)
-3. for each `maildir <dir>` instruction: invoke `dicomq-local`
+3. for each `maildir <dir>` instruction: invoke `dicomq-local`. A
+   *temporary* failure (exit 111 — missing maildir, transient I/O) defers
+   the whole message in place; a *permanent* failure (exit 100 — a
+   different object already occupies the `new/<id>` slot, which a unique
+   id makes a real collision rather than a replay) escalates it to
+   `failed/`, mirroring the unknown-AET path, rather than re-attempting
+   it every scan
 4. when every instruction has committed: discard the object from
    `queue/todo/<AET>/` — `unlink` for a single object, but for a batch a
    rename of the whole directory into `trash/` followed by a delete, so the
@@ -292,7 +298,9 @@ success). A maildir on a different filesystem (link gives `EXDEV`) is
 delivered by copy through the maildir's own `tmp/` and committed by
 rename — which is what maildirs have `tmp/` for. Consumers must treat
 delivered files as read-only — they may share an inode with the spool —
-but may move or delete them freely.
+but may move or delete them freely. Exit codes follow qmail-local: `0`
+delivered, `111` temporary (the caller leaves the message queued), `100`
+permanent (the caller escalates it to `failed/`).
 
 **Remote delivery** (`dicomq-remote <DEST>`): open one association to the
 destination, proposing presentation contexts per its `propose` profile

@@ -169,11 +169,13 @@ check "delivery is a hardlink"             test "$(nlinks "$MD/new/$ID.dcm")" = 
 check "local is idempotent"                "$BIN/dicomq-local" "$ID" "$MD" "$SRC"
 check_not "local refuses a missing maildir" "$BIN/dicomq-local" "$ID" "$DICOMQ_SPOOL/aet/NOWHERE" "$SRC"
 # a different inode already at new/<id>.dcm is a collision, not a replayed
-# delivery: refuse so the source is not dequeued against the wrong object
+# delivery: refuse so the source is not dequeued against the wrong object, and
+# report it as PERMANENT (exit 100) — retrying can never resolve it
 cp "$WORK/test.dcm" "$SRC/COLLIDE.dcm"
 echo "a different object" > "$MD/new/COLLIDE.dcm"
-check_not "local refuses a colliding wrong object" \
-      "$BIN/dicomq-local" COLLIDE "$MD" "$SRC"
+"$BIN/dicomq-local" COLLIDE "$MD" "$SRC" >/dev/null 2>&1; rc=$?
+check "local reports a wrong-object collision as permanent (exit 100)" \
+      test "$rc" = 100
 rm -f "$MD/new/COLLIDE.dcm" "$SRC/COLLIDE.dcm"
 # cross-filesystem fallback: /dev/shm is a different fs from /tmp
 if [ -d /dev/shm ] && [ "$(stat -fc %i /dev/shm 2>/dev/null)" != "$(stat -fc %i "$WORK" 2>/dev/null)" ]; then
@@ -190,6 +192,18 @@ ID=$("$BIN/dicomq-inject" -c ARCHIVE "$WORK/test.dcm")
 "$BIN/dicomq-send" --once 2>/dev/null
 check "send delivers to the default maildir" test -f "$DICOMQ_SPOOL/aet/ARCHIVE/new/$ID.dcm"
 check "send dequeues after delivery"        test ! -e "$DICOMQ_SPOOL/queue/todo/ARCHIVE/$ID.dcm"
+
+# a PERMANENT local-delivery failure (a different object already occupies the
+# maildir slot) escalates to failed/, not an endless re-attempt every scan
+new_spool
+mkdir -p "$DICOMQ_SPOOL/aet/COLL"/{tmp,new}
+ID=$("$BIN/dicomq-inject" -c COLL "$WORK/test.dcm")
+echo "a different object" > "$DICOMQ_SPOOL/aet/COLL/new/$ID.dcm"   # collide
+"$BIN/dicomq-send" --once 2>/dev/null
+check "permanent local failure escalates to failed/" \
+      test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+check "permanent local failure dequeues from todo" \
+      test ! -e "$DICOMQ_SPOOL/queue/todo/COLL/$ID.dcm"
 
 # fan-out: maildir + two forwards
 new_spool

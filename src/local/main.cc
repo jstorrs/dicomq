@@ -16,8 +16,13 @@
 // files may share an inode with the spool: consumers may move or delete
 // them, never modify in place.
 //
-// Exit: 0 delivered; 100 bad usage; 111 temporary failure (missing
-// target, unreadable message) — the caller leaves the message queued.
+// Exit (qmail-local's delivery convention): 0 delivered; 111 temporary
+// failure (missing target, transient I/O) — the caller leaves the message
+// queued and retries; 100 permanent failure — re-running cannot help, so the
+// caller (dicomq-send) escalates the message to failed/ rather than re-attempt
+// it every scan. A permanent failure is a slot collision (a *different* object
+// already occupies new/<id>; ids are unique, so this is never a delivery
+// replay) or a bad invocation.
 
 #include <cerrno>
 #include <cstdio>
@@ -34,46 +39,55 @@
 namespace fs = std::filesystem;
 using namespace dicomq;
 
+// Outcome of a delivery attempt. Permanent = re-running cannot help, so the
+// caller escalates to failed/; Temporary = transient, leave the message queued.
+enum class Delivery { Ok, Temporary, Permanent };
+
 // link into the maildir, falling back to copy-through-tmp across
 // filesystems; idempotent either way
-static bool deliverFile(const std::string &src, const std::string &dir,
-                        const std::string &name, std::string &err) {
+static Delivery deliverFile(const std::string &src, const std::string &dir,
+                            const std::string &name, std::string &err) {
   const std::string dst = dir + "/new/" + name;
   switch (linkOrSame(src, dst, err)) {
   case LinkOutcome::Ok:
-    return fsyncPath(dir + "/new", err);
+    return fsyncPath(dir + "/new", err) ? Delivery::Ok : Delivery::Temporary;
   case LinkOutcome::Failed:
-    return false;
+    // A *different* object already occupying new/<id> is a permanent collision
+    // (ids are unique, so this is not a delivery replay and retrying can never
+    // resolve it). Any other link error (ENOSPC, EACCES) is transient — tell
+    // the two apart by whether the destination actually exists.
+    return pathExists(dst) ? Delivery::Permanent : Delivery::Temporary;
   case LinkOutcome::CrossDevice:
     break; // a cross-filesystem maildir: copy through its own tmp/
   }
   const std::string tmp = dir + "/tmp/" + name;
   if (!copyFile(src, tmp, err))
-    return false;
+    return Delivery::Temporary;
   if (!commitFile(tmp, dst, err)) {
     unlink(tmp.c_str());
-    return false;
+    return Delivery::Temporary;
   }
-  return true;
+  return Delivery::Ok;
 }
 
 // deliver a sealed batch as new/<id>/: stage its objects in tmp/<id>/
 // (hardlink on the spool fs, copy across filesystems), then publish with a
 // single atomic rename so the study appears all at once. Idempotent.
-static bool deliverBatch(const std::string &srcBatch, const std::string &dir,
-                         const std::string &id, std::string &err) {
+static Delivery deliverBatch(const std::string &srcBatch,
+                             const std::string &dir, const std::string &id,
+                             std::string &err) {
   const std::string dst = dir + "/new/" + id;
   if (isDir(dst))
-    return true; // already delivered
+    return Delivery::Ok; // already delivered
   if (!isDir(dir + "/tmp")) {
     err = "'" + dir + "/tmp' is not a directory (maildir needs tmp/)";
-    return false;
+    return Delivery::Temporary;
   }
   const std::string stage = dir + "/tmp/" + id;
   std::error_code ec;
   fs::remove_all(stage, ec); // clear any crashed partial staging
   if (!mkdirIfMissing(stage, err))
-    return false;
+    return Delivery::Temporary;
   for (const auto &objid : listIds(srcBatch)) {
     const std::string src = dcmPath(srcBatch, objid);
     const std::string tgt = dcmPath(stage, objid);
@@ -81,27 +95,27 @@ static bool deliverBatch(const std::string &srcBatch, const std::string &dir,
     case LinkOutcome::Ok:
       continue;
     case LinkOutcome::Failed:
-      return false;
+      return Delivery::Temporary;
     case LinkOutcome::CrossDevice:
       // cross-filesystem maildir: copyFile is non-durable, so flush the
       // copied contents before the staging dir is published by rename —
       // otherwise a crash can leave a complete-looking batch of truncated
       // members (the single-object path gets this via commitFile).
       if (!copyFile(src, tgt, err) || !fsyncPath(tgt, err))
-        return false;
+        return Delivery::Temporary;
     }
   }
   if (!fsyncPath(stage, err))
-    return false;
+    return Delivery::Temporary;
   if (rename(stage.c_str(), dst.c_str()) != 0) {
     if (errno == ENOTEMPTY || errno == EEXIST) {
       fs::remove_all(stage, ec); // raced: another pass delivered it
-      return true;
+      return Delivery::Ok;
     }
     err = "cannot rename '" + stage + "' to '" + dst + "': " + strerror(errno);
-    return false;
+    return Delivery::Temporary;
   }
-  return fsyncPath(dir + "/new", err);
+  return fsyncPath(dir + "/new", err) ? Delivery::Ok : Delivery::Temporary;
 }
 
 int main(int argc, char **argv) {
@@ -135,12 +149,18 @@ int main(int argc, char **argv) {
 
   // a batch is a directory <srcdir>/<id>/; a single object is <id>.dcm
   const std::string srcBatch = srcDir + "/" + id;
-  const bool ok = isDir(srcBatch)
-                      ? deliverBatch(srcBatch, dir, id, err)
+  const Delivery d =
+      isDir(srcBatch) ? deliverBatch(srcBatch, dir, id, err)
                       : deliverFile(dcmPath(srcDir, id), dir, id + ".dcm", err);
-  if (!ok) {
+  switch (d) {
+  case Delivery::Ok:
+    return 0;
+  case Delivery::Permanent:
+    std::fprintf(stderr, "dicomq-local: %s\n", err.c_str());
+    return 100; // re-running cannot help; the caller escalates to failed/
+  case Delivery::Temporary:
     std::fprintf(stderr, "dicomq-local: %s\n", err.c_str());
     return 111;
   }
-  return 0;
+  return 111; // unreachable; keep the compiler happy
 }
