@@ -4,7 +4,7 @@
 // dicomq-send — queue runner (qmail-send analog). The one long-running
 // process; owns all routing decisions.
 //
-//   dicomq-send [-s <spool>] [-i <scan-interval-seconds>] [--once]
+//   dicomq-send [-s <spool>] [-i <seconds>] [--once]
 //
 // Each pass: route every committed message in queue/todo/<called-AET>/
 // per that AET's deliver file (maildir instructions run dicomq-local,

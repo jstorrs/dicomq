@@ -73,7 +73,9 @@ Dataflow:
 ## Spool layout
 
 Default root `/var/spool/dicomq`, overridable with `$DICOMQ_SPOOL` (and a
-`-s` flag on every program). All paths below are relative to the root.
+`-s` flag on every program — a no-op on the internal `dicomq-local`, which
+its caller invokes with absolute paths). All paths below are relative to
+the root.
 
 ```
 queue/
@@ -312,7 +314,11 @@ channels). Per message: on success, unlink it; on a rejection by the
 reachable destination, demote it one retry rung (see "Retry" below). A
 permanent impossibility (no accepted context, transcode forbidden or
 unavailable) demotes too — a config fix between attempts can still rescue
-it, and rung N is the backstop.
+it, and rung N is the backstop. The one exception is a single message that
+on its own needs more presentation contexts than an association can hold
+(many SOP classes × proposed syntaxes): no later batch is smaller than one
+message, so deferring would livelock — that structural case fails straight
+to `route/<DEST>/failed/` rather than demoting.
 
 A *connection-level* failure (unreachable, refused, association rejected)
 is destination state, not message state: `dicomq-remote` records it in
