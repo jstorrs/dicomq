@@ -189,6 +189,23 @@ int main(int argc, char **argv) {
   }
   for (const auto &dest : listSubdirs(sp.routeRoot()))
     destSummary(dest);
+  // accum/<AET>: objects mid-accumulation, not yet sealed into a batch. Shown
+  // per-AET when non-empty so a removed/broken group config (which strands
+  // these — see dicomq-send sweepAccum) is visible rather than invisible.
+  for (const auto &aet : listSubdirs(sp.accumRoot())) {
+    size_t objs = 0, groups = 0;
+    for (const auto &uid : listSubdirs(sp.accumAET(aet))) {
+      const size_t n = listIds(sp.accumGroup(aet, uid)).size();
+      if (n) {
+        objs += n;
+        groups++;
+      }
+    }
+    if (objs)
+      std::printf("%-20s %4zu object%s in %zu group%s\n",
+                  ("accum/" + aet).c_str(), objs, objs == 1 ? " " : "s", groups,
+                  groups == 1 ? "" : "s");
+  }
   std::printf("%-20s %4zu messages\n", "hold", countDcm(sp.holdDir()));
   std::printf("%-20s %4zu messages\n", "failed", countDcm(sp.failedDir()));
   return 0;

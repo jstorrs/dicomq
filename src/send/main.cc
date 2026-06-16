@@ -190,9 +190,23 @@ static void sweepAccum() {
   for (const auto &aet : listSubdirs(sp.accumRoot())) {
     std::string err;
     GroupConfig group;
-    if (!GroupConfig::load(sp.aetDir(aet) + "/group", group, err) ||
-        !group.enabled())
-      continue; // not (or no longer) a grouping AET: leave its dirs alone
+    const bool loaded =
+        GroupConfig::load(sp.aetDir(aet) + "/group", group, err);
+    if (!loaded || !group.enabled()) {
+      // Not (or no longer) a grouping AET: leave its dirs alone. But objects
+      // already accumulated here can no longer be sealed and would strand
+      // silently — surface a backlog so a removed/broken group config is
+      // visible (dicomq-queue also reports accum/ counts).
+      size_t stranded = 0;
+      for (const auto &uid : listSubdirs(sp.accumAET(aet)))
+        stranded += listIds(sp.accumGroup(aet, uid)).size();
+      if (stranded > 0)
+        logmsg("accum/" + aet + ": " + std::to_string(stranded) +
+               " object(s) cannot be sealed — group config " +
+               (loaded ? "is disabled" : "is invalid: " + err) +
+               "; restore it to drain the backlog");
+      continue;
+    }
 
     for (const auto &uid : listSubdirs(sp.accumAET(aet))) {
       const std::string dir = sp.accumGroup(aet, uid);

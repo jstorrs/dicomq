@@ -83,7 +83,11 @@ static bool deliverBatch(const std::string &srcBatch, const std::string &dir,
     case LinkOutcome::Failed:
       return false;
     case LinkOutcome::CrossDevice:
-      if (!copyFile(src, tgt, err)) // cross-filesystem maildir
+      // cross-filesystem maildir: copyFile is non-durable, so flush the
+      // copied contents before the staging dir is published by rename —
+      // otherwise a crash can leave a complete-looking batch of truncated
+      // members (the single-object path gets this via commitFile).
+      if (!copyFile(src, tgt, err) || !fsyncPath(tgt, err))
         return false;
     }
   }

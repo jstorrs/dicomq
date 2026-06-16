@@ -359,16 +359,20 @@ int main(int argc, char **argv) {
     proposeTS.push_back(UID_LittleEndianExplicitTransferSyntax);
     proposeTS.push_back(UID_LittleEndianImplicitTransferSyntax);
   }
-  // The association can carry at most 128 presentation contexts (odd ids
-  // 1..255). With many SOP classes in one batch the budget can run out
-  // before every class gets a context; classes left unproposed must be
-  // DEFERRED, not failed (a later, smaller batch will fit them), so
-  // remember which classes we actually proposed.
+  // The association carries at most 127 presentation contexts: ids are odd
+  // and a Uint8, so 253 is the last usable id (255 + 2 would wrap to 1).
+  // With many SOP classes in one run the budget can run out before every
+  // class gets a context; classes left unproposed are normally DEFERRED, not
+  // failed (a later, smaller batch will fit them), so remember which classes
+  // we actually proposed. The exception is a single message that on its own
+  // needs more than the budget (kMaxContexts) — no later batch is smaller
+  // than one message, so that one must fail, not defer (handled below).
+  constexpr size_t kMaxContexts = 127;
   std::set<std::string> proposedSops;
   T_ASC_PresentationContextID pid = 1;
   for (const auto &sop : sopClasses) {
     if (pid > 253)
-      break; // 128-context PDU limit reached; remaining classes deferred
+      break; // context budget reached; remaining classes deferred
     for (const auto &ts : proposeTS) {
       if (pid > 253)
         break;
@@ -401,7 +405,29 @@ int main(int argc, char **argv) {
     // object that cannot be loaded quarantines the whole message. The
     // destination dedups any objects of the message it already received.
     bool itemFailed = false, deferItem = false, quarantined = false;
+    bool failPermanent = false; // structural impossibility: skip the retry
+                                // ladder, go straight to failed/
     std::string failReason;
+
+    // Contexts this message needs ON ITS OWN (so the defer-vs-fail decision
+    // does not depend on what else shares this run): one per (distinct SOP
+    // class x proposed syntax). proposeTS is fixed when the profile lists
+    // syntaxes; otherwise it is the message's own syntaxes plus the two
+    // uncompressed defaults, mirroring how proposeTS is built above.
+    std::set<std::string> itemSops, itemTs;
+    for (const auto &o : item.objects)
+      itemSops.insert(o.sopClass);
+    if (!profile.transferSyntaxes.empty()) {
+      itemTs.insert(profile.transferSyntaxes.begin(),
+                    profile.transferSyntaxes.end());
+    } else {
+      for (const auto &o : item.objects)
+        if (!o.xferUID.empty())
+          itemTs.insert(o.xferUID);
+      itemTs.insert(UID_LittleEndianExplicitTransferSyntax);
+      itemTs.insert(UID_LittleEndianImplicitTransferSyntax);
+    }
+    const bool itemCannotFit = itemSops.size() * itemTs.size() > kMaxContexts;
 
     for (const auto &obj : item.objects) {
       DcmFileFormat ff;
@@ -433,11 +459,25 @@ int main(int argc, char **argv) {
         // deferral must not consume a retry rung) from a destination that
         // refused a class we did propose (a real, permanent rejection).
         if (proposedSops.count(obj.sopClass) == 0) {
-          logmsg("deferred " + item.id +
-                 ": presentation-context budget "
-                 "exhausted, " +
-                 obj.sopClass + " not proposed this batch");
-          deferItem = true;
+          if (itemCannotFit) {
+            // Even alone this message needs more contexts than fit; no later
+            // batch is smaller than one message, so deferring would livelock.
+            // This is structural, not transient — fail it outright rather than
+            // climb the retry ladder, which exists for transient problems.
+            failPermanent = true;
+            failReason =
+                "needs " + std::to_string(itemSops.size() * itemTs.size()) +
+                " presentation contexts (" + std::to_string(itemSops.size()) +
+                " SOP classes x " + std::to_string(itemTs.size()) +
+                " syntaxes), over the " + std::to_string(kMaxContexts) +
+                "-context association limit";
+          } else {
+            logmsg("deferred " + item.id +
+                   ": presentation-context budget "
+                   "exhausted, " +
+                   obj.sopClass + " not proposed this batch");
+            deferItem = true;
+          }
         } else {
           itemFailed = true;
           failReason = "no presentation context accepted for " + obj.sopClass;
@@ -516,6 +556,15 @@ int main(int argc, char **argv) {
       continue; // the whole message was moved to corrupt/
     if (deferItem)
       continue; // left in place for a later batch
+    if (failPermanent) {
+      // a permanent impossibility: no retry will ever help, so move straight
+      // to failed/ instead of consuming the (transient-problem) retry ladder
+      logmsg("failing " + item.id + ": " + failReason);
+      if (!sinkMessage(sp.routeFailed(destName), item.dir, item.id,
+                       item.isBatch, err))
+        logmsg("cannot fail " + item.id + ": " + err);
+      continue;
+    }
     if (itemFailed) {
       demote(item, failReason);
       continue;

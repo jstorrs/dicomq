@@ -106,6 +106,28 @@ int main() {
     put("study 0\n");
     expect(!GroupConfig::load(tmp, g, err), "non-positive timeout is rejected");
 
+    // strict numeric parse: atoi/atol would silently truncate trailing junk
+    put("study 30x\n");
+    expect(!GroupConfig::load(tmp, g, err),
+           "trailing garbage in timeout is rejected");
+    put("study 12 34\n");
+    expect(!GroupConfig::load(tmp, g, err),
+           "extra token after timeout is rejected");
+
+    // RemoteConfig port parsing (dest/<DEST>/remote): same strict rule
+    put("host: 1.2.3.4\naet: STORE\nport: 11112\n");
+    RemoteConfig rc;
+    expect(RemoteConfig::load(tmp, rc, err) && rc.port == 11112,
+           "valid remote config parses");
+    put("host: 1.2.3.4\naet: STORE\nport: 104junk\n");
+    expect(!RemoteConfig::load(tmp, rc, err),
+           "trailing garbage in port is rejected");
+    put("host: 1.2.3.4\naet: STORE\nport: 70000\n");
+    expect(!RemoteConfig::load(tmp, rc, err), "out-of-range port is rejected");
+    put("host: 1.2.3.4\naet: STORE\n");
+    expect(RemoteConfig::load(tmp, rc, err) && rc.port == 104,
+           "missing port defaults to 104");
+
     // inline '#' comments are stripped — the copy-pasteable README/DESIGN
     // propose example must parse verbatim (full-line and inline comments)
     put("# a propose profile\n"

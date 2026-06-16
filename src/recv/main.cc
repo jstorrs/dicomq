@@ -248,6 +248,16 @@ static int handleAssociation(T_ASC_Association *assoc) {
         UID_RLELosslessTransferSyntax,
         UID_DeflatedExplicitVRLittleEndianTransferSyntax,
         UID_BigEndianExplicitTransferSyntax,
+        // video: accept-all means all standard storage syntaxes (DESIGN.md)
+        UID_MPEG2MainProfileAtMainLevelTransferSyntax,
+        UID_MPEG2MainProfileAtHighLevelTransferSyntax,
+        UID_MPEG4HighProfileLevel4_1TransferSyntax,
+        UID_MPEG4BDcompatibleHighProfileLevel4_1TransferSyntax,
+        UID_MPEG4HighProfileLevel4_2_For2DVideoTransferSyntax,
+        UID_MPEG4HighProfileLevel4_2_For3DVideoTransferSyntax,
+        UID_MPEG4StereoHighProfileLevel4_2TransferSyntax,
+        UID_HEVCMainProfileLevel5_1TransferSyntax,
+        UID_HEVCMain10ProfileLevel5_1TransferSyntax,
     };
     for (const char *u : all)
       ts.push_back(u);

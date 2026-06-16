@@ -6,6 +6,7 @@
 #include "common/kvfile.h"
 
 #include <cerrno>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -14,6 +15,21 @@
 namespace dicomq {
 
 namespace fs = std::filesystem;
+
+// Parse an integer that must consume the WHOLE token. Operator-facing config
+// values go through this rather than atoi/atol, which silently accept trailing
+// garbage ("30x" -> 30, "5400junk" -> 5400) and so would mask typos. Returns
+// false on empty, malformed, partial, or out-of-range input.
+static bool parseWholeInt(const std::string &s, long &out) {
+  const char *begin = s.data();
+  const char *end = begin + s.size();
+  long value = 0;
+  const auto res = std::from_chars(begin, end, value);
+  if (res.ec != std::errc() || res.ptr != end)
+    return false;
+  out = value;
+  return true;
+}
 
 // Shared line reader for profile files: strips comments, trims
 // whitespace, and skips blank lines. A '#' at line start or preceded by
@@ -250,9 +266,9 @@ bool GroupConfig::load(const std::string &path, GroupConfig &g,
   const std::string secs = sp == std::string::npos
                                ? std::string()
                                : line.substr(line.find_first_not_of(" \t", sp));
-  g.quiescenceSeconds = atol(secs.c_str());
-  if (g.quiescenceSeconds <= 0) {
-    err = "'" + path + "' needs a positive quiescence timeout in seconds";
+  if (!parseWholeInt(secs, g.quiescenceSeconds) || g.quiescenceSeconds <= 0) {
+    err =
+        "'" + path + "' needs a positive integer quiescence timeout in seconds";
     return false;
   }
   return true;
@@ -268,8 +284,14 @@ bool RemoteConfig::load(const std::string &path, RemoteConfig &c,
   c.aet = kv.get("aet");
   c.callingAET = kv.get("calling-aet");
   const std::string port = kv.get("port");
-  if (!port.empty())
-    c.port = atoi(port.c_str());
+  if (!port.empty()) {
+    long parsed = 0;
+    if (!parseWholeInt(port, parsed) || parsed < 1 || parsed > 65535) {
+      err = "'" + path + "' has an invalid port (want 1-65535): " + port;
+      return false;
+    }
+    c.port = static_cast<int>(parsed);
+  }
   if (c.host.empty() || c.aet.empty() || c.port <= 0 || c.port > 65535) {
     err = "'" + path + "' must define host, aet, and a valid port";
     return false;
