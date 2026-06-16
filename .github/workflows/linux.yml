@@ -12,6 +12,14 @@ on:
 # job builds and runs the full ctest suite (unit + network integration)
 # on Ubuntu; loopback DICOM networking works on hosted runners, so the
 # storescu/storescp legs run for real here.
+#
+# DCMTK split: the 3.7.0 floor CMakeLists enforces (the CVE-2025-14607
+# fix) only matters for the libraries dicomq *links*, so we build just
+# those from source (BUILD_APPS=OFF — skipping DCMTK's ~100 command-line
+# tools is the bulk of the build time). The test harness uses DCMTK's
+# storescu/storescp/dcmdump/dump2dcm only as external peers, where the
+# version is irrelevant, so those come from apt. The library build is
+# cached and saved even when a later step fails, so it is paid once.
 
 jobs:
   build:
@@ -20,23 +28,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # DCMTK from apt is older than the 3.7.0 floor CMakeLists enforces
-      # (the CVE-2025-14607 fix), so build that exact version from source
-      # and cache it. Bump DCMTK_VERSION here and the cache key follows.
+      # build deps for the DCMTK libraries + dcmtk (storescu/storescp/
+      # dcmdump/dump2dcm) as test peers. zlib enables deflated transfer
+      # syntax; OpenSSL is required by dcmtls.
       - name: Toolchain dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake g++ make libssl-dev zlib1g-dev libpng-dev libtiff-dev
+            cmake g++ make libssl-dev zlib1g-dev dcmtk
 
-      - name: Cache DCMTK
+      - name: Restore cached DCMTK
         id: cache-dcmtk
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/dcmtk-install
-          key: dcmtk-3.7.0-${{ runner.os }}-${{ runner.arch }}
+          key: dcmtk-libs-3.7.0-${{ runner.os }}-${{ runner.arch }}
 
-      - name: Build DCMTK 3.7.0 (cache miss only)
+      # Libraries only: BUILD_APPS=OFF drops the command-line tools (the
+      # bulk of the build), PNG/TIFF are dcmimage export features dicomq
+      # does not use.
+      - name: Build DCMTK 3.7.0 libraries (cache miss only)
         if: steps.cache-dcmtk.outputs.cache-hit != 'true'
         env:
           DCMTK_VERSION: "3.7.0"
@@ -47,13 +58,24 @@ jobs:
           cmake -S "$src" -B "$src/build" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_APPS=OFF \
             -DDCMTK_WITH_OPENSSL=ON \
             -DDCMTK_WITH_ZLIB=ON \
+            -DDCMTK_WITH_PNG=OFF \
+            -DDCMTK_WITH_TIFF=OFF \
             -DDCMTK_WITH_TANDEM=OFF \
-            -DBUILD_APPS=ON \
             -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/dcmtk-install"
           cmake --build "$src/build" --parallel
           cmake --install "$src/build"
+
+      # Save even if a later step fails, so the one-time library build is
+      # never repeated on a flaky test run. No-ops when the key already hit.
+      - name: Save cached DCMTK
+        if: always() && steps.cache-dcmtk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/dcmtk-install
+          key: dcmtk-libs-3.7.0-${{ runner.os }}-${{ runner.arch }}
 
       - name: Configure
         run: cmake -B build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/dcmtk-install"
@@ -61,9 +83,7 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      # storescu/storescp from the DCMTK we built are needed by the
-      # network integration legs; put them on PATH for the test harness.
+      # storescu/storescp/dcmdump/dump2dcm come from the apt dcmtk package
+      # (already on PATH); the network legs run against them as peers.
       - name: Test
-        run: |
-          export PATH="$RUNNER_TEMP/dcmtk-install/bin:$PATH"
-          ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure
