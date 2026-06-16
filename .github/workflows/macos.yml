@@ -31,9 +31,18 @@ jobs:
       # --warnings-as-errors.
       - name: Lint (clang-tidy)
         run: |
+          # brew --prefix resolves the formula even though it is keg-only
+          # / unlinked, so the explicit path works without `brew link`.
           tidy="$(brew --prefix llvm@21)/bin/clang-tidy"
           "$tidy" --version
-          "$tidy" -p build --warnings-as-errors='*' $(git ls-files 'src/*.cc')
+          # compile_commands.json comes from AppleClang, which finds the
+          # macOS SDK (and its libc++ headers) implicitly. brew's clang-tidy
+          # does not, so '<string>'/'<iostream>' etc. come up "file not
+          # found" -- point it at the active SDK explicitly.
+          sdk="$(xcrun --show-sdk-path)"
+          "$tidy" -p build \
+            --extra-arg=-isysroot --extra-arg="$sdk" \
+            --warnings-as-errors='*' $(git ls-files 'src/*.cc')
 
       - name: Build
         run: cmake --build build --parallel
