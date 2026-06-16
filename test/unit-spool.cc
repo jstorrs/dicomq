@@ -12,10 +12,12 @@
 #include "common/profile.h"
 #include "common/spool.h"
 
+#include <csignal>
 #include <cstdio>
 #include <fstream>
 #include <string>
 
+#include <sys/resource.h>
 #include <unistd.h>
 
 using namespace dicomq;
@@ -98,6 +100,50 @@ int main() {
                     dirs[3].second == 10 &&
                     dirs[3].first == sp.routeRetry(dest, 10);
     expect(ok, "routeQueueDirs sorts rungs numerically, dropping malformed");
+  }
+
+  // --- copyFile is all-or-nothing -------------------------------------
+  {
+    const std::string cpSrc = root + "/cp-src";
+    const std::string cpDst = root + "/cp-dst";
+    writeFile(cpSrc, "payload to copy\n");
+    err.clear();
+    expect(copyFile(cpSrc, cpDst, err) && isDir(root), "copyFile succeeds");
+    {
+      std::ifstream in(cpDst);
+      std::string got((std::istreambuf_iterator<char>(in)),
+                      std::istreambuf_iterator<char>());
+      expect(got == "payload to copy\n", "copyFile reproduces the source");
+    }
+    // a missing source fails and creates no destination
+    const std::string cpDst2 = root + "/cp-dst2";
+    err.clear();
+    expect(!copyFile(root + "/no-such-src", cpDst2, err) && !pathExists(cpDst2),
+           "copyFile of a missing source leaves no destination");
+
+    // a write that cannot complete (tiny RLIMIT_FSIZE; SIGXFSZ ignored so the
+    // write returns EFBIG rather than killing us) must leave no partial file
+    signal(SIGXFSZ, SIG_IGN);
+    struct rlimit orig{};
+    if (getrlimit(RLIMIT_FSIZE, &orig) == 0) {
+      writeFile(cpSrc, std::string(4096, 'x')); // larger than the cap below
+      const std::string partial = root + "/cp-partial";
+      struct rlimit cap = orig;
+      cap.rlim_cur = 64;
+      if (setrlimit(RLIMIT_FSIZE, &cap) == 0) {
+        err.clear();
+        const bool ok = copyFile(cpSrc, partial, err);
+        setrlimit(RLIMIT_FSIZE, &orig); // restore before any other write
+        expect(!ok, "copyFile fails when the write cannot complete");
+        expect(!pathExists(partial),
+               "copyFile leaves no partial dst on a write error");
+        unlink(partial.c_str());
+      } else {
+        setrlimit(RLIMIT_FSIZE, &orig);
+      }
+    }
+    unlink(cpSrc.c_str());
+    unlink(cpDst.c_str());
   }
 
   // --- freeBytes sentinel ---------------------------------------------

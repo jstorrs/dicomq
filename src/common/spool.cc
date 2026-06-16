@@ -270,27 +270,34 @@ bool copyFile(const std::string &src, const std::string &dst,
     close(in);
     return false;
   }
+  // copyFile is all-or-nothing: on any failure after dst is created, remove it
+  // so a truncated file is never left behind. Callers publish the result with
+  // commitFile/rename and trust a present file to be complete (a half-written
+  // maildir or retry-rung copy a crash or ENOSPC leaves would corrupt
+  // delivery).
+  auto fail = [&](const std::string &message) {
+    err = message;
+    close(in);
+    close(out);
+    unlink(dst.c_str());
+    return false;
+  };
   char buf[65536];
   ssize_t got;
   while ((got = read(in, buf, sizeof(buf))) > 0) {
     ssize_t done = 0;
     while (done < got) {
       const ssize_t put = write(out, buf + done, got - done);
-      if (put < 0) {
-        err = "write error on '" + dst + "': " + strerror(errno);
-        close(in);
-        close(out);
-        return false;
-      }
+      if (put < 0)
+        return fail("write error on '" + dst + "': " + strerror(errno));
       done += put;
     }
   }
-  const bool readOk = (got == 0);
-  if (!readOk)
-    err = "read error on '" + src + "': " + strerror(errno);
+  if (got < 0)
+    return fail("read error on '" + src + "': " + strerror(errno));
   close(in);
   close(out);
-  return readOk;
+  return true;
 }
 
 time_t idTime(const std::string &id) {
