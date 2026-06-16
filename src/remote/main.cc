@@ -130,7 +130,7 @@ static constexpr int kMaxPresentationContextID = 253;
 static constexpr size_t kMaxContexts = 127;
 
 static void logmsg(const std::string &m) {
-  std::fprintf(stderr, "dicomq-remote: %s: %s\n", destName.c_str(), m.c_str());
+  dicomq::logmsg("dicomq-remote: " + destName, m);
 }
 
 // destination-level backoff (dead-site cache): one file, not N messages

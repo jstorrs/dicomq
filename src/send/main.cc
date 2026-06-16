@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include <getopt.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -53,9 +54,7 @@ using namespace dicomq;
 static Spool sp;
 static std::map<std::string, pid_t> running; // dest -> dicomq-remote pid
 
-static void logmsg(const std::string &m) {
-  std::fprintf(stderr, "dicomq-send: %s\n", m.c_str());
-}
+static void logmsg(const std::string &m) { dicomq::logmsg("dicomq-send", m); }
 
 static std::string selfExecutable() {
 #ifdef __APPLE__
@@ -359,23 +358,35 @@ int main(int argc, char **argv) {
   std::string spoolArg;
   long interval = 10;
   bool once = false;
-  for (int i = 1; i < argc; i++) {
-    const std::string a = argv[i];
-    if (a == "-s" && i + 1 < argc)
-      spoolArg = argv[++i];
-    else if (a == "-i" && i + 1 < argc) {
-      if (!parseWholeInt(argv[++i], interval) || interval <= 0) {
+  static const struct option longopts[] = {{"once", no_argument, nullptr, 'o'},
+                                           {nullptr, 0, nullptr, 0}};
+  const char *usage =
+      "usage: dicomq-send [-s <spool>] [-i <seconds>] [--once]\n";
+  opterr = 0; // we print our own one-line usage
+  int opt;
+  while ((opt = getopt_long(argc, argv, "s:i:", longopts, nullptr)) != -1) {
+    switch (opt) {
+    case 's':
+      spoolArg = optarg;
+      break;
+    case 'i':
+      if (!parseWholeInt(optarg, interval) || interval <= 0) {
         std::fprintf(stderr,
                      "dicomq-send: -i must be a positive number of seconds\n");
         return 100;
       }
-    } else if (a == "--once")
+      break;
+    case 'o':
       once = true;
-    else {
-      std::fprintf(stderr,
-                   "usage: dicomq-send [-s <spool>] [-i <seconds>] [--once]\n");
+      break;
+    default:
+      std::fputs(usage, stderr);
       return 100;
     }
+  }
+  if (optind != argc) { // dicomq-send takes no positional arguments
+    std::fputs(usage, stderr);
+    return 100;
   }
 
   sp = Spool(spoolArg);

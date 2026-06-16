@@ -131,6 +131,10 @@ long long freeBytes(const std::string &path);
 // the caller still range-checks the value (e.g. non-negative, 1..65535).
 bool parseWholeInt(const std::string &s, long &out);
 
+// Write "<prog>: <msg>\n" to stderr. The single place the diagnostic-line
+// format lives; each program wraps it with its own name (dicomq-recv etc.).
+void logmsg(const std::string &prog, const std::string &msg);
+
 // Filesystem predicates: pathExists is any stat-able entry; isDir is a
 // directory. Both report false (never an error) for a missing path.
 bool pathExists(const std::string &path);

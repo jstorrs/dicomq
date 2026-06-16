@@ -318,6 +318,10 @@ bool parseWholeInt(const std::string &s, long &out) {
   return true;
 }
 
+void logmsg(const std::string &prog, const std::string &msg) {
+  std::fprintf(stderr, "%s: %s\n", prog.c_str(), msg.c_str());
+}
+
 bool pathExists(const std::string &path) {
   struct stat st;
   return stat(path.c_str(), &st) == 0;

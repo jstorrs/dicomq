@@ -47,6 +47,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <getopt.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -61,9 +62,7 @@ using namespace dicomq;
 static Spool sp;
 static long long watermarkBytes = 1024LL * 1024 * 1024;
 
-static void logmsg(const std::string &m) {
-  std::fprintf(stderr, "dicomq-recv: %s\n", m.c_str());
-}
+static void logmsg(const std::string &m) { dicomq::logmsg("dicomq-recv", m); }
 
 // ---------------------------------------------------------------------------
 // per-store state shared with the DIMSE callback
@@ -338,34 +337,51 @@ int main(int argc, char **argv) {
   std::string spoolArg;
   long listenPort = 0;
   bool once = false, useTLS = false;
-  for (int i = 1; i < argc; i++) {
-    const std::string a = argv[i];
-    if (a == "-s" && i + 1 < argc)
-      spoolArg = argv[++i];
-    else if (a == "-w" && i + 1 < argc) {
+  static const struct option longopts[] = {
+      {"listen", required_argument, nullptr, 'l'},
+      {"once", no_argument, nullptr, 'o'},
+      {"tls", no_argument, nullptr, 't'},
+      {nullptr, 0, nullptr, 0}};
+  const char *usage = "usage: dicomq-recv [-s <spool>] [-w <watermark-MB>] "
+                      "[--listen <port>] [--once] [--tls]\n";
+  opterr = 0; // we print our own one-line usage
+  int opt;
+  while ((opt = getopt_long(argc, argv, "s:w:", longopts, nullptr)) != -1) {
+    switch (opt) {
+    case 's':
+      spoolArg = optarg;
+      break;
+    case 'w': {
       long mb = 0;
-      if (!parseWholeInt(argv[++i], mb) || mb < 0) {
+      if (!parseWholeInt(optarg, mb) || mb < 0) {
         std::fprintf(stderr,
                      "dicomq-recv: -w must be a non-negative number of MB\n");
         return 100;
       }
       watermarkBytes = static_cast<long long>(mb) * 1024 * 1024;
-    } else if (a == "--listen" && i + 1 < argc) {
-      if (!parseWholeInt(argv[++i], listenPort) || listenPort < 1 ||
+      break;
+    }
+    case 'l':
+      if (!parseWholeInt(optarg, listenPort) || listenPort < 1 ||
           listenPort > 65535) {
         std::fprintf(stderr, "dicomq-recv: --listen port must be 1..65535\n");
         return 100;
       }
-    } else if (a == "--once")
+      break;
+    case 'o':
       once = true;
-    else if (a == "--tls")
+      break;
+    case 't':
       useTLS = true;
-    else {
-      std::fprintf(stderr,
-                   "usage: dicomq-recv [-s <spool>] [-w <watermark-MB>] "
-                   "[--listen <port>] [--once] [--tls]\n");
+      break;
+    default:
+      std::fputs(usage, stderr);
       return 100;
     }
+  }
+  if (optind != argc) { // dicomq-recv takes no positional arguments
+    std::fputs(usage, stderr);
+    return 100;
   }
 
   sp = Spool(spoolArg);
