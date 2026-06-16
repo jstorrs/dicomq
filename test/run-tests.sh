@@ -131,6 +131,21 @@ age_out "$DICOMQ_SPOOL/queue/tmp/stale.dcm" "$DICOMQ_SPOOL/queue/todo/ARCHIVE/ke
 check "clean reaps stale tmp files"        test ! -e "$DICOMQ_SPOOL/queue/tmp/stale.dcm"
 check "clean never touches committed objects" test -e "$DICOMQ_SPOOL/queue/todo/ARCHIVE/kept.dcm"
 
+# clean reaps route/<dest>/complete/ by message-id age (idTime, not mtime),
+# leaving recent deliveries; failed/ and corrupt/ are never auto-reaped
+new_spool
+CDIR="$DICOMQ_SPOOL/route/PACS1/complete"
+mkdir -p "$CDIR" "$CDIR/20000102000000000.0.000000"
+OLD=20000101000000000.0.000000                       # year 2000: aged out
+NEW=$(date -u +%Y%m%d%H%M%S)000.0.000000             # ~now: within grace
+touch "$CDIR/$OLD.dcm" "$CDIR/$NEW.dcm" "$CDIR/20000102000000000.0.000000/a.dcm"
+mkdir -p "$DICOMQ_SPOOL/route/PACS1/failed"; touch "$DICOMQ_SPOOL/route/PACS1/failed/$OLD.dcm"
+"$BIN/dicomq-clean" >/dev/null
+check "clean reaps an aged complete/ object"   test ! -e "$CDIR/$OLD.dcm"
+check "clean reaps an aged complete/ batch"    test ! -e "$CDIR/20000102000000000.0.000000"
+check "clean keeps a recent complete/ object"  test -e "$CDIR/$NEW.dcm"
+check "clean never reaps per-dest failed/"     test -e "$DICOMQ_SPOOL/route/PACS1/failed/$OLD.dcm"
+
 # --- local ----------------------------------------------------------------
 new_spool
 mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
@@ -311,6 +326,8 @@ if command -v storescp >/dev/null; then
   "$BIN/dicomq-remote" PACS1 2>/dev/null
   check "remote delivers to the destination"  test -n "$(ls -A "$WORK/pacs1")"
   check "remote dequeues after delivery"      test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+  check "remote moves the delivered object to complete/" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/complete/$ID.dcm"
   check "no status file after success"        test ! -e "$DICOMQ_SPOOL/route/PACS1/status"
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
 
@@ -339,7 +356,7 @@ if command -v storescp >/dev/null; then
   # than creating retry/2 — the ladder depth is the directories present
   age_out "$DICOMQ_SPOOL/route/PACS1/retry/1/$ID.dcm"
   RERR2=$("$BIN/dicomq-remote" PACS1 2>&1)
-  check "rejection at the top rung fails it"   test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+  check "rejection at the top rung fails it"   test -f "$DICOMQ_SPOOL/route/PACS1/failed/$ID.dcm"
   check "no next rung is created"             test ! -e "$DICOMQ_SPOOL/route/PACS1/retry/2"
   check "failure names the missing rung"      grep -q 'no retry/2 rung' <<<"$RERR2"
 
@@ -530,6 +547,8 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
         test "$(ls -A "$WORK/studypacs" | wc -l | tr -d '[:space:]')" = 2
   check "study-mode: remote drains the batch" \
         test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
+  check "study-mode: delivered batch lands in complete/" \
+        test -d "$DICOMQ_SPOOL/route/PACS1/complete/$BATCH"
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
 
   # a straggler for the same study starts a fresh batch — no name collision

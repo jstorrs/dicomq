@@ -58,6 +58,21 @@ struct Spool {
   std::string routeStatus(const std::string &d) const {
     return routeDir(d) + "/status";
   }
+  // Per-destination terminal sinks for a forwarding message. They are
+  // per-destination (not the global failed/, corrupt/) so a fan-out object
+  // that ends differently at two destinations never aliases in one shared
+  // sink — same-inode hardlinks rename to a no-op, leaving the source stuck.
+  // complete/ is auto-reaped by dicomq-clean; failed/ and corrupt/ are
+  // operator-managed. dicomq creates each on first use.
+  std::string routeComplete(const std::string &d) const {
+    return routeDir(d) + "/complete";
+  }
+  std::string routeFailed(const std::string &d) const {
+    return routeDir(d) + "/failed";
+  }
+  std::string routeCorrupt(const std::string &d) const {
+    return routeDir(d) + "/corrupt";
+  }
   std::string routeHoldFlag(const std::string &d) const {
     return routeDir(d) + "/hold";
   }
@@ -66,6 +81,10 @@ struct Spool {
   std::string destDir(const std::string &d) const {
     return root + "/dest/" + d;
   }
+  // Global failed/ holds only pre-routing failures (dicomq-send: an unknown
+  // called AET or no satisfiable instruction — no destination to attribute
+  // them to) and dicomq-ctl's operator-initiated fail. Per-destination
+  // forwarding failures live in routeFailed()/routeCorrupt() instead.
   std::string failedDir() const { return root + "/failed"; }
   std::string holdDir() const { return root + "/hold"; }
   std::string corruptDir() const { return root + "/corrupt"; }

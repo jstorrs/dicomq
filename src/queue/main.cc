@@ -148,7 +148,15 @@ static void destSummary(const std::string &dest) {
     extra += "[down until " + status.get("next-attempt-after") + ": " +
              status.get("last-failure") + "] ";
   if (!rungs.empty())
-    extra += "[retry" + rungs + "]";
+    extra += "[retry" + rungs + "] ";
+  // per-destination terminal sinks (objects, like the global failed/corrupt
+  // lines below); shown only when non-empty to keep idle queues quiet
+  if (const size_t n = countDcm(sp.routeComplete(dest)))
+    extra += "[complete " + std::to_string(n) + "] ";
+  if (const size_t n = countDcm(sp.routeFailed(dest)))
+    extra += "[failed " + std::to_string(n) + "] ";
+  if (const size_t n = countDcm(sp.routeCorrupt(dest)))
+    extra += "[corrupt " + std::to_string(n) + "] ";
   summaryLine("route/" + dest, q, extra);
 }
 

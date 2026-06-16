@@ -118,13 +118,25 @@ $SPOOL/route/PACS1/retry/3` is every object that has failed PACS1 three
 times. You size the ladder by creating the rungs — `mkdir -p
 $SPOOL/route/PACS1/retry/{1..8}` allows eight tries — and dicomq never
 creates one itself, so a rejection at the top existing rung (or with no
-`retry/` dir at all) lands the object in `failed/` rather than digging
-deeper. Reasons are in the log, not the spool — the rung says how many
-times, the log says why.
+`retry/` dir at all) lands the object in `route/<DEST>/failed/` rather than
+digging deeper. Reasons are in the log, not the spool — the rung says how
+many times, the log says why.
 
-`failed/` is the bounce pile — point your alerting at it. `corrupt/`
-holds quarantined malformed objects. dicomq never deletes from either;
-inspect, then `dicomq-ctl requeue` or `rm`.
+Each forwarding outcome is recorded **under its destination**, so a fan-out
+to two PACS that succeeds at one and fails at the other tells you which:
+
+```
+route/PACS1/complete/   # delivered OK — auto-expires (dicomq-clean -G, 72h)
+route/PACS1/failed/     # gave up after the last retry rung — your bounce pile
+route/PACS1/corrupt/    # turned out unreadable when forwarding
+```
+
+`route/<DEST>/failed/` is the bounce pile — point your alerting at it.
+dicomq never deletes from `failed/` or `corrupt/`; inspect, then `dicomq-ctl
+requeue` or `rm`. Only `complete/` is reaped automatically. (The top-level
+`failed/` now holds just *pre-routing* failures — an unknown called AET or a
+`deliver` line with no usable destination — which have no `<DEST>` to file
+under.)
 
 ## macOS
 

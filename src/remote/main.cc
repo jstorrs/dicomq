@@ -21,7 +21,11 @@
 // ladder by which route/<DEST>/retry/<k> directories exist: a rejection
 // with no next rung — or any permanent impossibility (no accepted
 // context, transcode forbidden or unavailable) at the top of the ladder —
-// moves the object to failed/. The reason for every outcome is logged,
+// moves the object to route/<DEST>/failed/. A delivered message moves to
+// route/<DEST>/complete/ (auto-reaped by dicomq-clean), and an unreadable
+// one to route/<DEST>/corrupt/; all three sinks are per-destination so a
+// fan-out object never aliases across them. The reason for every outcome is
+// logged,
 // never stored. Transcoding happens per attempt, in memory; the
 // queued object is never modified. Policy: 'never' requires the stored
 // syntax to be accepted; 'lossless' transcodes but refuses lossy target
@@ -126,14 +130,27 @@ static void recordConnectionFailure(const std::string &reason) {
          std::to_string(delay) + "s");
 }
 
+// Move a finished forwarding message into one of this destination's terminal
+// sinks (complete/, failed/, corrupt/), creating the sink on first use. The
+// sinks are per-destination: a fan-out object that ends differently at two
+// destinations would otherwise alias in a shared sink — its hardlinks share
+// one inode, so the second rename is a POSIX no-op that leaves the source in
+// place and that destination re-processes it forever. None of the sinks is
+// ever scheduled, so a plain rename (no fresh-mtime copy) is fine.
+static bool sinkMessage(const std::string &sinkDir, const std::string &fromDir,
+                        const std::string &id, bool isBatch, std::string &err) {
+  return mkdirIfMissing(sinkDir, err) &&
+         moveMessage(fromDir, sinkDir, id, err, isBatch);
+}
+
 // a destination rejected this message: climb one retry rung, or fail it
 // at the top. The operator sizes the ladder by which route/<DEST>/retry/<k>
 // directories exist — dicomq never creates a rung, so a rejection with no
 // next rung is terminal. The move to a rung COPIES the object to a fresh
 // inode (and unlinks the source) so this rung's mtime — what the backoff
 // clock reads — is private, even though the same .dcm may be hardlinked
-// into other destinations' queues. The terminal move to failed/ can be a
-// plain rename: failed/ is never scheduled.
+// into other destinations' queues. The terminal move to route/<DEST>/failed/
+// is a plain rename: failed/ is never scheduled.
 static void demote(const WorkItem &w, const std::string &reason) {
   std::string err;
   const int next = w.level + 1;
@@ -141,7 +158,7 @@ static void demote(const WorkItem &w, const std::string &reason) {
   if (!isDir(nextDir)) {
     logmsg("failing " + w.id + ": " + reason + " (no retry/" +
            std::to_string(next) + " rung)");
-    if (!moveMessage(w.dir, sp.failedDir(), w.id, err, w.isBatch))
+    if (!sinkMessage(sp.routeFailed(destName), w.dir, w.id, w.isBatch, err))
       logmsg("cannot fail " + w.id + ": " + err);
     return;
   }
@@ -253,7 +270,8 @@ int main(int argc, char **argv) {
       }
       if (!ok) {
         logmsg("quarantining " + msg.id + ": cannot read file meta");
-        if (!moveMessage(dir, sp.corruptDir(), msg.id, err, msg.isBatch))
+        if (!sinkMessage(sp.routeCorrupt(destName), dir, msg.id, msg.isBatch,
+                         err))
           logmsg("cannot quarantine " + msg.id + ": " + err);
         continue;
       }
@@ -389,7 +407,8 @@ int main(int argc, char **argv) {
       cond = ff.loadFile(obj.path.c_str());
       if (cond.bad()) {
         logmsg("quarantining " + item.id + ": " + cond.text());
-        if (!moveMessage(item.dir, sp.corruptDir(), item.id, err, item.isBatch))
+        if (!sinkMessage(sp.routeCorrupt(destName), item.dir, item.id,
+                         item.isBatch, err))
           logmsg("cannot quarantine " + item.id + ": " + err);
         quarantined = true;
         break;
@@ -500,8 +519,9 @@ int main(int argc, char **argv) {
       demote(item, failReason);
       continue;
     }
-    if (!removeMessage(item.dir, item.id, err, item.isBatch))
-      logmsg("delivered " + item.id + " but cannot dequeue: " + err);
+    if (!sinkMessage(sp.routeComplete(destName), item.dir, item.id,
+                     item.isBatch, err))
+      logmsg("delivered " + item.id + " but cannot move to complete/: " + err);
     else
       logmsg("delivered " + item.id +
              (item.isBatch

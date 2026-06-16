@@ -44,7 +44,7 @@ must not be on NFS.
 | `dicomq-send` | `qmail-send` | watch the queue, route each object per its called AET |
 | `dicomq-local` | `qmail-local` | deliver one object into a maildir-style directory |
 | `dicomq-remote` | `qmail-remote` | forward queued objects to one destination over C-STORE |
-| `dicomq-clean` | `qmail-clean` | reap interrupted `queue/tmp/` writes |
+| `dicomq-clean` | `qmail-clean` | reap interrupted `queue/tmp/` writes and aged `route/<DEST>/complete/` deliveries |
 | `dicomq-inject` | `qmail-inject` | enqueue a local DICOM file as if it had been received |
 | `dicomq-queue` | `postqueue`/`qshape` | show what is queued where: counts, ages, destination status (read-only) |
 | `dicomq-ctl` | `postsuper` | queue surgery: hold, release, requeue, fail |
@@ -90,6 +90,9 @@ route/
   <DEST>/
     todo/              # objects queued for <DEST>, never attempted
     retry/<k>/         # objects rejected k times, awaiting their k-th backoff
+    complete/          # forwarded OK; auto-reaped by dicomq-clean (-G window)
+    failed/            # terminal forwarding failure (reason is in the log)
+    corrupt/           # quarantined: unreadable when this <DEST> went to send
     status             # optional: destination-level backoff (dicomq-remote)
     hold               # optional flag: operator froze this destination
 aet/
@@ -101,17 +104,30 @@ dest/
   <DEST>/              # existence ⇒ this forwarding destination exists
     remote             # host, port, AET of the remote SCP
     propose            # optional: outbound transfer syntax profile
-failed/                # terminal failures: the object (reason is in the log)
+failed/                # pre-routing failures only: dicomq-send could not
+                       # route (unknown called AET / no instruction), and
+                       # dicomq-ctl fail. Forwarding failures live per-DEST.
 hold/                  # operator-frozen messages, origin mirrored as a subpath
-corrupt/               # quarantined malformed objects
+corrupt/               # legacy/global quarantine (forwarding now per-DEST)
 ```
 
-dicomq never creates `aet/`, `dest/`, or `route/<DEST>/` entries —
-creating them **is** configuration, done by the operator. The per-AET
-`queue/todo/<AET>/` and per-rung `route/<DEST>/retry/<k>/` leaves, the
-`accum/<AET>/<UID>/` accumulation directories, `failed/`, `hold/`,
-`corrupt/`, route `status` files, and the contents of maildirs are
-dicomq's to write.
+The per-destination `complete/`, `failed/`, and `corrupt/` are **per
+destination on purpose**: under a multi-`forward` fan-out the same object is
+hardlinked into each destination's queue, so a single shared sink would
+alias — two same-inode hardlinks rename to a POSIX no-op, leaving the source
+behind for that destination to re-process forever (a directory batch fails
+the second move with `ENOTEMPTY` instead). Scoping each sink under its
+`route/<DEST>/` removes the aliasing and records *which* destination produced
+each outcome. `complete/` is the only auto-expiring one; `failed/` and
+`corrupt/` are operator-managed, like the global `failed/`.
+
+dicomq never creates `aet/`, `dest/`, `route/<DEST>/`, or `retry/<k>/`
+entries — creating them **is** configuration, done by the operator (the
+retry-ladder depth is exactly which `retry/<k>/` dirs exist). The per-AET
+`queue/todo/<AET>/` leaves, the per-destination `complete/`, `failed/`, and
+`corrupt/` sinks (created on first use), the `accum/<AET>/<UID>/`
+accumulation directories, the global `failed/`, `hold/`, `corrupt/`, route
+`status` files, and the contents of maildirs are dicomq's to write.
 
 Directory names under `aet/` (and `queue/todo/`) are *sanitized* AE
 titles: trimmed, alphanumerics and `-` kept, everything else replaced by
@@ -292,9 +308,17 @@ is destination state, not message state: `dicomq-remote` records it in
 and `dicomq-send` skips the whole destination until that time — Postfix's
 dead-site backoff. A successful association removes the status file.
 
-**Failure** (`dicomq-remote`, when a reachable destination rejects an
-object already at the last retry rung): rename it into `failed/`. The
-reason is logged, not stored. `failed/` is the bounce pile; alerting
+**Success and failure** (`dicomq-remote`). A delivered object is renamed
+into `route/<DEST>/complete/` — not deleted in place — so the dequeue is one
+atomic rename (a whole-directory rename for a batch, which a non-atomic
+recursive delete could leave half-undone and re-send). `complete/` is a
+recently-delivered audit/recovery window that `dicomq-clean` reaps on age.
+When a reachable destination rejects an object already at the last retry
+rung, it is renamed into `route/<DEST>/failed/` instead; the reason is
+logged, not stored. These sinks (and `corrupt/`) are **per destination**
+because under fan-out the same object is hardlinked into several
+destinations' queues — a shared sink would alias and strand the source (see
+"Spool layout"). The per-`<DEST>` `failed/` is the bounce pile; alerting
 watches it.
 
 **Hold and quarantine** (Postfix's `hold/` and `corrupt/` queues).
@@ -305,8 +329,10 @@ reads the called AET from the object's file meta to return it to
 `queue/todo/<AET>/`. Touching `route/<DEST>/hold` freezes a whole
 destination: `dicomq-send` stops triggering `dicomq-remote <DEST>` until
 the flag is removed — a PACS migration is `touch`, migrate, `rm`. Nothing
-in `hold/`, `corrupt/`, or `failed/` is ever deleted by dicomq; leaving
-those directories is the operator's decision.
+in `hold/`, the per-`<DEST>` `failed/`/`corrupt/`, or the global `failed/`
+is ever deleted by dicomq; leaving those directories is the operator's
+decision. (`route/<DEST>/complete/` is the exception — delivered messages
+there auto-expire on age, see `dicomq-clean`.)
 
 ## Routing instructions: `aet/<AET>/deliver`
 
@@ -402,7 +428,7 @@ transcode: lossless        # never | lossless | as-needed
 ```
 
 - `never` — only send objects already in an accepted syntax; others
-  count as delivery failures (and eventually land in `failed/`)
+  count as delivery failures (and eventually land in `route/<DEST>/failed/`)
 - `lossless` — transcode if a lossless path exists, else fail
 - `as-needed` — transcode even lossily if that is the only option
 
@@ -432,7 +458,8 @@ not a wall-clock age, bounds retries) and its `attempt:` envelope history
 The ladder depth is **configuration, not a flag**: dicomq never creates a
 rung, so the operator sizes it by which `route/<DEST>/retry/<k>`
 directories exist. With `retry/1`…`retry/5` present, a rejection at
-`retry/5` moves the object to `failed/` rather than creating `retry/6`;
+`retry/5` moves the object to `route/<DEST>/failed/` rather than creating
+`retry/6`;
 with no `retry/` directory at all, the first rejection fails immediately
 (retries are opt-in, per principle 4, "Configuration is directories").
 `mkdir -p route/PACS1/retry/{1..8}` sets that destination's tolerance to
@@ -507,7 +534,11 @@ Three Postfix lessons bound the cost of this scheme:
 - `dicomq-local` and `dicomq-remote` are short-lived children of
   `dicomq-send`, also runnable by hand against the spool — which is the
   debugging story: every stage can be re-run from the shell.
-- `dicomq-clean` runs from a timer/cron.
+- `dicomq-clean` runs from a timer/cron. It reaps interrupted `queue/tmp/`
+  writes (`-g`, default 36h) and aged `route/<DEST>/complete/` deliveries
+  (`-G`, default 72h; `-G 0` clears them each pass). Complete-age is the
+  message-id timestamp, as everywhere else, not file mtime (a rename
+  preserves mtime).
 - `dicomq-queue` is read-only and safe for any user with read access to
   the spool; `dicomq-ctl` performs queue surgery and runs as the send
   user. Both do a cheap *meta-only* read of an object's file header to

@@ -3,16 +3,21 @@
 
 // dicomq-clean — tmp reaper (qmail-clean analog). Run from a timer/cron.
 //
-//   dicomq-clean [-s <spool>] [-g <grace-hours>]
+//   dicomq-clean [-s <spool>] [-g <grace-hours>] [-G <complete-grace-hours>]
 //
-// Removes queue/tmp/ entries older than the grace period (default 36
-// hours): interrupted receive/inject/transcode writes that never
-// committed. A committed message is a single <id>.dcm placed by one
-// atomic rename, so the queues never hold half-written objects and there
-// are no sidecar orphans to reap. Touches nothing younger and nothing
-// outside queue/tmp/. Reports every removal on stdout.
+// Removes queue/tmp/ entries older than -g (default 36 hours): interrupted
+// receive/inject/transcode writes that never committed. A committed message
+// is a single <id>.dcm placed by one atomic rename, so the queues never hold
+// half-written objects and there are no sidecar orphans to reap.
 //
-// Speaks no DICOM; links only dicomq-common.
+// Also reaps route/<DEST>/complete/ — messages a destination's queue runner
+// finished forwarding and moved aside — once their message-id timestamp is
+// older than -G (default 72 hours). complete/ is the recently-delivered
+// audit/recovery window; -G 0 clears it every pass. (failed/ and corrupt/
+// are operator-managed and never auto-reaped.)
+//
+// Touches nothing younger and nothing outside those two areas. Reports every
+// removal on stdout. Speaks no DICOM; links only dicomq-common.
 
 #include <cstdio>
 #include <cstdlib>
@@ -55,11 +60,39 @@ static void cleanTmp(const std::string &dir) {
   }
 }
 
+// Remove a delivered message from a complete/ dir — a single <id>.dcm or a
+// batch directory <id>/ — recursively. Age is taken from the message-id
+// timestamp (idTime), as everywhere else in dicomq, not the file mtime,
+// which a rename preserves and would not reflect time-in-complete/.
+static void reapComplete(const Spool &sp, time_t completeCutoff) {
+  for (const auto &dest : listSubdirs(sp.routeRoot())) {
+    std::error_code ec;
+    for (const auto &entry :
+         fs::directory_iterator(sp.routeComplete(dest), ec)) {
+      const std::string name = entry.path().filename().string();
+      const std::string id =
+          hasDcmSuffix(name) ? name.substr(0, name.size() - 4) : name;
+      const time_t t = idTime(id);
+      if (t == 0 || t >= completeCutoff)
+        continue; // unparseable id, or not old enough — leave it
+      const std::string p = entry.path().string();
+      const auto n = fs::remove_all(p, ec);
+      if (ec) {
+        std::fprintf(stderr, "dicomq-clean: cannot remove '%s': %s\n",
+                     p.c_str(), ec.message().c_str());
+        problems++;
+      } else if (n > 0)
+        std::printf("removed %s\n", p.c_str());
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   std::string spoolArg;
   long graceHours = 36;
+  long completeGraceHours = 72;
   int opt;
-  while ((opt = getopt(argc, argv, "s:g:")) != -1) {
+  while ((opt = getopt(argc, argv, "s:g:G:")) != -1) {
     switch (opt) {
     case 's':
       spoolArg = optarg;
@@ -67,23 +100,29 @@ int main(int argc, char **argv) {
     case 'g':
       graceHours = atol(optarg);
       break;
+    case 'G':
+      completeGraceHours = atol(optarg);
+      break;
     default:
       std::fprintf(stderr,
-                   "usage: dicomq-clean [-s <spool>] [-g <grace-hours>]\n");
+                   "usage: dicomq-clean [-s <spool>] [-g <grace-hours>] "
+                   "[-G <complete-grace-hours>]\n");
       return 100;
     }
   }
-  if (graceHours < 0) {
+  if (graceHours < 0 || completeGraceHours < 0) {
     // a negative grace pushes the cutoff into the future, which would
     // reap freshly written tmp/ and not-yet-committed objects
-    std::fprintf(stderr, "dicomq-clean: -g must not be negative\n");
+    std::fprintf(stderr, "dicomq-clean: -g and -G must not be negative\n");
     return 100;
   }
 
   const Spool sp(spoolArg);
-  cutoff = time(nullptr) - graceHours * 3600;
+  const time_t now = time(nullptr);
+  cutoff = now - graceHours * 3600;
 
   cleanTmp(sp.queueTmp());
+  reapComplete(sp, now - completeGraceHours * 3600);
 
   return problems ? 111 : 0;
 }
