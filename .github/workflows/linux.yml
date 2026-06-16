@@ -5,6 +5,12 @@ on:
   pull_request:
   workflow_dispatch:   # lets you trigger a run manually from the Actions tab / gh
 
+# Rapid pushes should not pile up slow DCMTK builds: cancel an in-progress
+# run on the same ref when a newer commit arrives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Why this job exists: the only other build/test job runs on macOS. The
 # inotify-driven scan in src/send/main.cc is Linux-only (macOS falls back
 # to periodic scanning), so without a Linux runner that path — and any
@@ -15,15 +21,18 @@ on:
 #
 # DCMTK split: the 3.7.0 floor CMakeLists enforces (the CVE-2025-14607
 # fix) only matters for the libraries dicomq *links*, so we build just
-# those from source (BUILD_APPS=OFF — skipping DCMTK's ~100 command-line
-# tools is the bulk of the build time). The test harness uses DCMTK's
-# storescu/storescp/dcmdump/dump2dcm only as external peers, where the
-# version is irrelevant, so those come from apt. The library build is
-# cached and saved even when a later step fails, so it is paid once.
+# those from source. The test harness uses DCMTK's storescu/storescp/
+# dcmdump/dump2dcm only as external peers, where the version is
+# irrelevant, so those come from apt. The library build is cached and
+# saved even when a later step fails, so it is paid once.
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Safety net: a correctly scoped DCMTK build finishes in a few
+    # minutes. If it ever balloons (e.g. module trimming stops working and
+    # it builds everything again), fail fast instead of burning hours.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v5
@@ -42,11 +51,14 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/dcmtk-install
-          key: dcmtk-libs-3.7.0-${{ runner.os }}-${{ runner.arch }}
+          key: dcmtk-libs-3.7.0-min-${{ runner.os }}-${{ runner.arch }}
 
-      # Libraries only: BUILD_APPS=OFF drops the command-line tools (the
-      # bulk of the build), PNG/TIFF are dcmimage export features dicomq
-      # does not use.
+      # DCMTK_MODULES limits the build to the libraries dicomq links and
+      # their dependencies. BUILD_APPS=OFF only skips the command-line
+      # tools, NOT the library modules -- without this the build also
+      # compiles dcmrt/dcmiod/dcmwlm/dcmqrdb/dcmsr/... (dcmrt alone is
+      # hundreds of files), which is what was timing the job out. PNG/TIFF
+      # are dcmimage export features dicomq does not use.
       - name: Build DCMTK 3.7.0 libraries (cache miss only)
         if: steps.cache-dcmtk.outputs.cache-hit != 'true'
         env:
@@ -59,11 +71,11 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_APPS=OFF \
+            -DDCMTK_MODULES="ofstd;oflog;oficonv;dcmdata;dcmimgle;dcmimage;dcmjpeg;dcmjpls;dcmnet;dcmtls" \
             -DDCMTK_WITH_OPENSSL=ON \
             -DDCMTK_WITH_ZLIB=ON \
             -DDCMTK_WITH_PNG=OFF \
             -DDCMTK_WITH_TIFF=OFF \
-            -DDCMTK_WITH_TANDEM=OFF \
             -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/dcmtk-install"
           cmake --build "$src/build" --parallel
           cmake --install "$src/build"
@@ -75,7 +87,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/dcmtk-install
-          key: dcmtk-libs-3.7.0-${{ runner.os }}-${{ runner.arch }}
+          key: dcmtk-libs-3.7.0-min-${{ runner.os }}-${{ runner.arch }}
 
       - name: Configure
         run: cmake -B build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/dcmtk-install"
