@@ -15,8 +15,11 @@ namespace dicomq {
 
 namespace fs = std::filesystem;
 
-// Shared line reader for profile files: trims whitespace, skips blank
-// lines and '#' comments. A genuinely absent file is reported via
+// Shared line reader for profile files: strips comments, trims
+// whitespace, and skips blank lines. A '#' at line start or preceded by
+// whitespace begins a comment to end of line (so inline comments in the
+// copy-pasteable config examples parse); a '#' embedded in a token is
+// kept, so paths may contain one. A genuinely absent file is reported via
 // `missing` when missingOk (the caller then uses a compiled-in default);
 // otherwise it is an error. Existence is decided with std::filesystem so
 // the "missing optional config" case never rides on errno being set
@@ -45,9 +48,18 @@ static bool readProfileLines(const std::string &path,
   }
   std::string line;
   while (std::getline(in, line)) {
+    // strip an inline comment: a '#' at line start or preceded by
+    // whitespace begins a comment; one embedded in a token is kept
+    for (size_t h = line.find('#'); h != std::string::npos;
+         h = line.find('#', h + 1)) {
+      if (h == 0 || line[h - 1] == ' ' || line[h - 1] == '\t') {
+        line.erase(h);
+        break;
+      }
+    }
     const size_t b = line.find_first_not_of(" \t");
-    if (b == std::string::npos || line[b] == '#')
-      continue;
+    if (b == std::string::npos)
+      continue; // blank or comment-only line
     const size_t e = line.find_last_not_of(" \t");
     lines.push_back(line.substr(b, e - b + 1));
   }

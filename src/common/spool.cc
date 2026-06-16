@@ -100,6 +100,28 @@ bool mkdirIfMissing(const std::string &path, std::string &err) {
   return fsyncPath(dirOf(path), err);
 }
 
+bool mkdirsUnder(const std::string &base, const std::string &rel,
+                 std::string &err) {
+  if (!mkdirIfMissing(base, err)) // base itself (e.g. hold/) may be absent
+    return false;
+  std::string path = base;
+  size_t start = 0;
+  while (start < rel.size()) {
+    const size_t slash = rel.find('/', start);
+    const std::string comp =
+        rel.substr(start, slash == std::string::npos ? slash : slash - start);
+    if (!comp.empty()) {
+      path += "/" + comp;
+      if (!mkdirIfMissing(path, err))
+        return false;
+    }
+    if (slash == std::string::npos)
+      break;
+    start = slash + 1;
+  }
+  return true;
+}
+
 static bool flushToStableStorage(int fd) {
 #ifdef __APPLE__
   // fsync(2) on macOS flushes only to the drive's cache; F_FULLFSYNC is

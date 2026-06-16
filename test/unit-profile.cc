@@ -106,6 +106,18 @@ int main() {
     put("study 0\n");
     expect(!GroupConfig::load(tmp, g, err), "non-positive timeout is rejected");
 
+    // inline '#' comments are stripped — the copy-pasteable README/DESIGN
+    // propose example must parse verbatim (full-line and inline comments)
+    put("# a propose profile\n"
+        "JPEGLSLossless\n"
+        "ExplicitVRLittleEndian\n"
+        "transcode: lossless        # never | lossless | as-needed\n");
+    ProposeProfile pp;
+    expect(ProposeProfile::load(tmp, pp, err) &&
+               pp.transcode == ProposeProfile::Transcode::Lossless &&
+               pp.transferSyntaxes.size() == 2,
+           "inline comments are stripped");
+
     unlink(tmp.c_str());
   }
 

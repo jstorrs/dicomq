@@ -151,8 +151,10 @@ int main(int argc, char **argv) {
       return 0; // already held: idempotent
     // mirror the origin path under hold/ so release can recover it
     const std::string toDir = sp.holdDir() + "/" + from;
-    std::error_code ec;
-    fs::create_directories(toDir, ec);
+    if (!mkdirsUnder(sp.holdDir(), from, err)) {
+      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
+      return 111;
+    }
     if (!moveMessage(fromDir, toDir, id, err, isBatch)) {
       std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;
@@ -168,8 +170,10 @@ int main(int argc, char **argv) {
     }
     const std::string origin = from.substr(5); // strip "hold/"
     const std::string toDir = sp.root + "/" + origin;
-    std::error_code ec;
-    fs::create_directories(toDir, ec);
+    if (!mkdirsUnder(sp.root, origin, err)) {
+      std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
+      return 111;
+    }
     if (!moveMessage(fromDir, toDir, id, err, isBatch)) {
       std::fprintf(stderr, "dicomq-ctl: %s\n", err.c_str());
       return 111;

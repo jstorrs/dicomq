@@ -544,9 +544,10 @@ Three Postfix lessons bound the cost of this scheme:
   user. Both do a cheap *meta-only* read of an object's file header to
   recover its AETs (queue listing) or called AET (ctl `requeue`) — the
   only DICOM the queue-side tools touch; the rest is pure filesystem.
-- Two users suffice: one for recv (may write only `queue/`), one for
-  send/local/remote/clean (everything else). The receiver compromise
-  blast radius is "can enqueue objects", nothing more.
+- Two users suffice: one for recv (may write only `queue/`, plus `accum/`
+  when any AET runs in study/series mode), one for send/local/remote/clean
+  (everything else). The receiver compromise blast radius is "can enqueue
+  objects", nothing more.
 
 ## What is pruned from storescp, and what replaces it
 

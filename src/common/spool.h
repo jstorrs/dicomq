@@ -165,6 +165,14 @@ std::string dirOf(const std::string &path);
 // this only fills in the per-AET and per-retry-rung leaves dicomq owns).
 bool mkdirIfMissing(const std::string &path, std::string &err);
 
+// Durably create `base` (if absent) and then every component of `rel` (a
+// '/'-separated relative path) beneath it — each level via mkdirIfMissing,
+// so parents are fsynced. base's own parent must already exist. Used to
+// mirror a message's origin path under hold/ (and back). Reports a clear
+// error instead of leaving a half-made tree for a later rename to trip over.
+bool mkdirsUnder(const std::string &base, const std::string &rel,
+                 std::string &err);
+
 // fsync the file or directory at path. On failure returns false and
 // sets err.
 bool fsyncPath(const std::string &path, std::string &err);
