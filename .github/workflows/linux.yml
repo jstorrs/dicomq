@@ -98,6 +98,19 @@ jobs:
       - name: Configure
         run: cmake -B build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/dcmtk-install"
 
+      # The macOS job also runs clang-tidy, but only this platform compiles
+      # the Linux-only inotify path in dicomq-send — without this step that
+      # code is never statically analyzed. Same major pin (21) as the
+      # .clang-tidy baseline; the uvx wheel avoids apt.llvm.org setup.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Lint (clang-tidy)
+        run: |
+          uvx clang-tidy@21.1.6 --version
+          uvx clang-tidy@21.1.6 -p build --warnings-as-errors='*' \
+            $(git ls-files 'src/*.cc')
+
       - name: Build
         run: cmake --build build --parallel
 

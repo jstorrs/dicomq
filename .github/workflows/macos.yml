@@ -80,6 +80,11 @@ jobs:
           done
           [ "$bad" -eq 0 ] && echo "OK: no /opt/homebrew references in bin/ or libs/"
 
+      # THIRD-PARTY-NOTICES exists precisely for binary distribution (DCMTK's
+      # BSD notice); ship it — and dicomq's own license — with the binaries.
+      - name: Include license notices
+        run: cp LICENSE THIRD-PARTY-NOTICES "$RUNNER_TEMP/dist/"
+
       - name: Upload binaries
         uses: actions/upload-artifact@v6
         with:
