@@ -23,8 +23,12 @@ dicomq never creates directories — creating them *is* configuration:
 
 ```sh
 SPOOL=/var/spool/dicomq
-mkdir -p $SPOOL/{queue/{tmp,todo},route,aet,dest,failed,hold}
+mkdir -p $SPOOL/{queue/{tmp,todo},accum,route,aet,dest,failed,hold}
 ```
+
+(`accum/` is the study/series-mode staging area; it must exist even if
+no AET uses that mode — the systemd receiver unit names it in
+`ReadWritePaths` and cannot create it behind `ProtectSystem=strict`.)
 
 Every program takes `-s <spool>` or honours `$DICOMQ_SPOOL`
 (default `/var/spool/dicomq`). The spool must be one filesystem,
@@ -84,8 +88,23 @@ For production, run one `dicomq-recv` per association under systemd
 socket activation — unit files are in [systemd/](systemd/): install
 `dicomq-recv.socket`, `dicomq-recv@.service`, `dicomq-send.service`,
 and the `dicomq-clean` timer; create the `dicomq` and `dicomq-recv`
-users. Local submission and re-queueing use `dicomq-inject -c <aet>
-<file.dcm>...`.
+users and hand them the spool:
+
+```sh
+chown -R dicomq:dicomq $SPOOL
+chown dicomq-recv $SPOOL/queue/{tmp,todo} $SPOOL/accum
+chmod g+ws $SPOOL/queue/{tmp,todo} $SPOOL/accum   # setgid: what recv
+                                                  # creates stays group
+                                                  # dicomq, group-writable
+```
+
+The receiver writes only `queue/` and `accum/`; the `dicomq` user owns
+everything else (DESIGN.md "Process and privilege model"). If a
+`deliver` file targets a maildir *outside* the spool, extend
+`ReadWritePaths=` in `dicomq-send.service` to cover it — under
+`ProtectSystem=strict` everything else is read-only and the delivery
+would defer forever. Local submission and re-queueing use
+`dicomq-inject -c <aet> <file.dcm>...`.
 
 ## TLS
 

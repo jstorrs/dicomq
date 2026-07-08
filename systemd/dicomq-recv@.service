@@ -10,8 +10,12 @@ Environment=DICOMQ_SPOOL=/var/spool/dicomq
 User=dicomq-recv
 Group=dicomq
 # the receiver may write only the queue and (in study/series mode) the
-# accumulation stage; see DESIGN.md
+# accumulation stage; see DESIGN.md. Both must pre-exist (README "Create
+# a spool") — ProtectSystem=strict keeps the spool root read-only.
 ReadWritePaths=/var/spool/dicomq/queue /var/spool/dicomq/accum
+# group dicomq (the send user) must be able to link and unlink what
+# recv writes
+UMask=0002
 ProtectSystem=strict
 PrivateTmp=yes
 NoNewPrivileges=yes
