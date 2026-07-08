@@ -439,6 +439,37 @@ else
   echo "skip - recv tests (no storescu on PATH)"
 fi
 
+# --- recv supervisor mode: the connected socket arrives on fd 0 -----------
+# The production entry path — systemd Accept=yes and launchd's inetd mode
+# hand dicomq-recv a connected socket as stdin; every other leg here uses
+# --listen. The wrapper below does exactly what those supervisors do:
+# accept one connection, dup it to fd 0, exec dicomq-recv.
+if command -v storescu >/dev/null && command -v python3 >/dev/null; then
+  PORT=11189
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
+  python3 - "$BIN/dicomq-recv" $PORT <<'EOF' 2>/dev/null &
+import os, socket, sys
+prog, port = sys.argv[1], int(sys.argv[2])
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(1)
+conn, _ = s.accept()
+os.dup2(conn.fileno(), 0)
+os.execv(prog, [prog])
+EOF
+  SUP=$!
+  require_listen $PORT
+  check "supervisor mode: recv accepts a store on fd 0" \
+        storescu -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
+  wait $SUP
+  check "supervisor mode: the object is committed by AET" \
+        test -n "$(ls -A "$DICOMQ_SPOOL/queue/todo/ARCHIVE" 2>/dev/null)"
+else
+  echo "skip - supervisor-mode test (needs storescu and python3)"
+fi
+
 # --- remote (needs storescp on PATH) ---------------------------------------
 if command -v storescp >/dev/null; then
   PORT=11178
