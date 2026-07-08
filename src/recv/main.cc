@@ -244,7 +244,15 @@ static int handleAssociation(T_ASC_Association *assoc) {
   ts.reserve(profile.transferSyntaxes.size());
   for (const auto &uid : profile.transferSyntaxes)
     ts.push_back(uid.c_str());
-  if (profile.acceptAll) {
+  // no accept file: the compiled-in default is uncompressed *preferred*,
+  // every standard syntax still accepted (DESIGN.md "Transfer syntax
+  // profiles") — a compressed-only proposer must not be refused
+  const bool noAcceptFile = ts.empty() && !profile.acceptAll;
+  if (noAcceptFile) {
+    ts.push_back(UID_LittleEndianExplicitTransferSyntax);
+    ts.push_back(UID_LittleEndianImplicitTransferSyntax);
+  }
+  if (profile.acceptAll || noAcceptFile) {
     static const char *all[] = {
         UID_JPEGLSLosslessTransferSyntax,
         UID_JPEG2000LosslessOnlyTransferSyntax,
@@ -270,7 +278,7 @@ static int handleAssociation(T_ASC_Association *assoc) {
     for (const char *u : all)
       ts.push_back(u);
   }
-  if (ts.empty() || profile.acceptAll) {
+  if (profile.acceptAll) {
     ts.push_back(UID_LittleEndianExplicitTransferSyntax);
     ts.push_back(UID_LittleEndianImplicitTransferSyntax);
   }

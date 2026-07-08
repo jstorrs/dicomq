@@ -386,6 +386,37 @@ if command -v storescu >/dev/null; then
   check_not "accept profile refuses excluded syntaxes" \
         storescu -xi -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
   wait $RECV
+
+  # no accept file: the compiled-in default accepts every standard syntax
+  # (uncompressed preferred), so a compressed-only proposer can still store
+  if command -v dcmcjpls >/dev/null; then
+    rm "$DICOMQ_SPOOL/aet/ARCHIVE/accept"
+    dcmcjpls "$WORK/test.dcm" "$WORK/test-jls.dcm" 2>/dev/null
+    cat > "$WORK/jls-only.cfg" <<'EOF'
+[[TransferSyntaxes]]
+[JLSOnly]
+TransferSyntax1 = 1.2.840.10008.1.2.4.80
+
+[[PresentationContexts]]
+[JLSContext]
+PresentationContext1 = 1.2.840.10008.5.1.4.1.1.7\JLSOnly
+
+[[Profiles]]
+[JLS]
+PresentationContexts = JLSContext
+EOF
+    "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
+    RECV=$!; require_listen $PORT
+    check "default accept profile takes a compressed-only proposal" \
+          storescu -xf "$WORK/jls-only.cfg" JLS -aet MOD1 -aec ARCHIVE \
+                   localhost $PORT "$WORK/test-jls.dcm"
+    wait $RECV
+    JLSDCM="$DICOMQ_SPOOL/queue/todo/ARCHIVE/$(ls "$DICOMQ_SPOOL/queue/todo/ARCHIVE" | sort | tail -1)"
+    check "compressed object is queued as received" \
+          meta_has "$JLSDCM" '0002,0010.*JPEGLSLossless'
+  else
+    echo "skip - compressed-only default-profile leg (no dcmcjpls on PATH)"
+  fi
 else
   echo "skip - recv tests (no storescu on PATH)"
 fi
