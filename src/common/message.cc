@@ -39,9 +39,18 @@ bool linkBatchTree(const std::string &srcParent, const std::string &dstParent,
                    const std::string &id, std::string &err) {
   const std::string src = srcParent + "/" + id;
   const std::string dst = dstParent + "/" + id;
-  // a fresh directory carries a fresh mtime — the retry backoff clock —
-  // while the member objects below share inodes with the source
-  if (!mkdirIfMissing(dst, err))
+  // Build the tree under a dot-name — which the queue walkers skip
+  // (listSubdirs) — and publish it with one rename: a half-linked batch
+  // must never be a valid, due message, or an interruption mid-tree would
+  // let it be delivered as a shrunken study. The stage name is
+  // deterministic so an interrupted pass resumes idempotently;
+  // dicomq-clean reaps a stage that a crash orphaned. The fresh directory
+  // carries a fresh mtime — the retry backoff clock — while the member
+  // objects below share inodes with the source.
+  if (isDir(dst))
+    return true; // a prior pass already published it
+  const std::string stage = dstParent + "/." + id + ".stage";
+  if (!mkdirIfMissing(stage, err))
     return false;
   std::error_code ec;
   for (const auto &entry : fs::directory_iterator(src, ec)) {
@@ -49,14 +58,28 @@ bool linkBatchTree(const std::string &srcParent, const std::string &dstParent,
     // route/ fan-out is same-filesystem, so a member can only end up
     // Ok or Failed; an existing member with a different inode (a stale or
     // wrong tree) fails here rather than being accepted as delivered.
-    if (linkOrSame(src + "/" + name, dst + "/" + name, err) != LinkOutcome::Ok)
+    if (linkOrSame(src + "/" + name, stage + "/" + name, err) !=
+        LinkOutcome::Ok)
       return false;
   }
   if (ec) {
     err = "cannot read batch '" + src + "': " + ec.message();
     return false;
   }
-  return fsyncPath(dst, err);
+  if (!fsyncPath(stage, err))
+    return false;
+  if (rename(stage.c_str(), dst.c_str()) != 0) {
+    if ((errno == ENOTEMPTY || errno == EEXIST) && isDir(dst)) {
+      // a prior pass published this id between our isDir check and now;
+      // ours is redundant
+      std::error_code rec;
+      fs::remove_all(stage, rec);
+      return true;
+    }
+    err = "cannot publish batch '" + dst + "': " + strerror(errno);
+    return false;
+  }
+  return fsyncPath(dstParent, err);
 }
 
 bool moveMessage(const Spool &sp, const std::string &fromDir,

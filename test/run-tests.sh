@@ -819,6 +819,27 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   check "study-mode: the collision leaves no trash residue" \
         test -z "$(ls -A "$DICOMQ_SPOOL/trash" 2>/dev/null)"
 
+  # a batch link-tree is staged under a dot-name and published atomically:
+  # a stage (a fan-out or demotion a crash interrupted) must be invisible
+  # to the queue walkers — a half-linked tree delivered as a message would
+  # be a shrunken study — and clean reaps it once aged
+  STAGE="$DICOMQ_SPOOL/route/PACS1/todo/.20990101000000000.1.000000.stage"
+  mkdir -p "$STAGE"
+  ln "$DICOMQ_SPOOL/failed/$DBATCH/"*.dcm "$STAGE/"
+  check "study-mode: a staged tree is invisible to dicomq-queue" \
+        sh -c "! '$BIN/dicomq-queue' PACS1 | grep -q stage"
+  storescp -od "$WORK/studypacs2" $SPPORT 2>/dev/null & SCP=$!
+  require_listen $SPPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "study-mode: a staged tree is not forwarded" \
+        test -d "$STAGE" -a ! -e "$DICOMQ_SPOOL/route/PACS1/complete/.20990101000000000.1.000000.stage"
+  "$BIN/dicomq-clean" >/dev/null
+  check "study-mode: clean spares a fresh stage" test -d "$STAGE"
+  age_out "$STAGE"
+  "$BIN/dicomq-clean" >/dev/null
+  check "study-mode: clean reaps an aged stage" test ! -e "$STAGE"
+
   # a grouping AET refuses an object with no StudyInstanceUID
   new_spool
   mkdir -p "$DICOMQ_SPOOL/aet/STUDYR"/{tmp,new}

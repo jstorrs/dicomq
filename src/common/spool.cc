@@ -229,8 +229,12 @@ std::vector<std::string> listSubdirs(const std::string &dir) {
   reportDirError(dir, ec);
   for (const auto &entry : it) {
     std::error_code dec; // per-entry; keep it off the construction error above
-    if (entry.is_directory(dec))
-      names.push_back(entry.path().filename().string());
+    const std::string name = entry.path().filename().string();
+    // dot-names are private staging (a batch link-tree being built, see
+    // linkBatchTree), never messages or configuration — skip them so a
+    // half-built tree is not walkable as a queue entry
+    if (entry.is_directory(dec) && name.rfind('.', 0) != 0)
+      names.push_back(name);
   }
   std::sort(names.begin(), names.end());
   return names;

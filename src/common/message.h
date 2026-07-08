@@ -43,7 +43,10 @@ std::vector<Message> listMessages(const std::string &dir);
 // Recursively hardlink batch <id>/ from srcParent into a fresh directory
 // <id>/ under dstParent: the new directory gets its own mtime (a private
 // retry-backoff clock) while the member objects share inodes (fan-out and
-// copy-on-demote cost no data copy). Idempotent (EEXIST tolerated).
+// copy-on-demote cost no data copy). The tree is staged under a dot-name
+// the queue walkers skip and published by one atomic rename, so a partial
+// tree is never visible as a message. Idempotent (an existing <id>/ under
+// dstParent means a prior pass published it).
 bool linkBatchTree(const std::string &srcParent, const std::string &dstParent,
                    const std::string &id, std::string &err);
 
