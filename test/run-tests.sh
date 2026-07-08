@@ -184,6 +184,13 @@ echo "a different object" > "$MD/new/COLLIDE.dcm"
 check "local reports a wrong-object collision as permanent (exit 100)" \
       test "$rc" = 100
 rm -f "$MD/new/COLLIDE.dcm" "$SRC/COLLIDE.dcm"
+# ...but a byte-identical slot under a different inode is a crash-replayed
+# cross-filesystem copy delivery, not a collision: delivered, exit 0
+cp "$WORK/test.dcm" "$SRC/REPLAY.dcm"
+cp "$SRC/REPLAY.dcm" "$MD/new/REPLAY.dcm"
+check "local treats an identical-copy slot as delivered" \
+      "$BIN/dicomq-local" REPLAY "$MD" "$SRC"
+rm -f "$MD/new/REPLAY.dcm" "$SRC/REPLAY.dcm"
 # cross-filesystem fallback: /dev/shm is a different fs from /tmp
 if [ -d /dev/shm ] && [ "$(stat -fc %i /dev/shm 2>/dev/null)" != "$(stat -fc %i "$WORK" 2>/dev/null)" ]; then
   XMD=$(mktemp -d /dev/shm/dicomq-md.XXXXXX); mkdir -p "$XMD"/{tmp,new}
@@ -211,6 +218,17 @@ check "permanent local failure escalates to failed/" \
       test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
 check "permanent local failure dequeues from todo" \
       test ! -e "$DICOMQ_SPOOL/queue/todo/COLL/$ID.dcm"
+
+# a byte-identical copy in the slot (a crash-replayed cross-fs delivery)
+# is a completed delivery: send dequeues it, nothing escalates
+new_spool
+mkdir -p "$DICOMQ_SPOOL/aet/COLL"/{tmp,new}
+ID=$("$BIN/dicomq-inject" -c COLL "$WORK/test.dcm")
+cp "$DICOMQ_SPOOL/queue/todo/COLL/$ID.dcm" "$DICOMQ_SPOOL/aet/COLL/new/$ID.dcm"
+"$BIN/dicomq-send" --once 2>/dev/null
+check "replayed copy delivery dequeues without escalating" \
+      test ! -e "$DICOMQ_SPOOL/queue/todo/COLL/$ID.dcm" -a \
+           ! -e "$DICOMQ_SPOOL/failed/$ID.dcm"
 
 # fan-out: maildir + two forwards
 new_spool

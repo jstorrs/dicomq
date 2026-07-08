@@ -21,13 +21,17 @@
 // queued and retries; 100 permanent failure — re-running cannot help, so the
 // caller (dicomq-send) escalates the message to failed/ rather than re-attempt
 // it every scan. A permanent failure is a slot collision (a *different* object
-// already occupies new/<id>; ids are unique, so this is never a delivery
-// replay) or a bad invocation.
+// already occupies new/<id>) or a bad invocation; an occupied slot with
+// byte-identical content is a crash-replayed copy delivery and counts as
+// delivered.
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 #include <sys/stat.h>
@@ -45,6 +49,19 @@ static void logmsg(const std::string &m) { dicomq::logmsg("dicomq-local", m); }
 // caller escalates to failed/; Temporary = transient, leave the message queued.
 enum class Delivery { Ok, Temporary, Permanent };
 
+// byte-identical files? Unreadable counts as different — the caller then
+// reports the safe (permanent-collision) outcome rather than dequeueing
+// the source against an unverified slot.
+static bool sameContent(const std::string &a, const std::string &b) {
+  std::ifstream fa(a, std::ios::binary);
+  std::ifstream fb(b, std::ios::binary);
+  return fa && fb &&
+         std::equal(std::istreambuf_iterator<char>(fa),
+                    std::istreambuf_iterator<char>(),
+                    std::istreambuf_iterator<char>(fb),
+                    std::istreambuf_iterator<char>());
+}
+
 // link into the maildir, falling back to copy-through-tmp across
 // filesystems; idempotent either way
 static Delivery deliverFile(const std::string &src, const std::string &dir,
@@ -54,11 +71,17 @@ static Delivery deliverFile(const std::string &src, const std::string &dir,
   case LinkOutcome::Ok:
     return fsyncPath(dir + "/new", err) ? Delivery::Ok : Delivery::Temporary;
   case LinkOutcome::Failed:
-    // A *different* object already occupying new/<id> is a permanent collision
-    // (ids are unique, so this is not a delivery replay and retrying can never
-    // resolve it). Any other link error (ENOSPC, EACCES) is transient — tell
-    // the two apart by whether the destination actually exists.
-    return pathExists(dst) ? Delivery::Permanent : Delivery::Temporary;
+    // An occupied new/<id> slot may still be this delivery: a maildir on
+    // another filesystem is delivered by *copy*, so a crash-replay finds
+    // the right bytes under an inode that is not the source's (link gives
+    // EEXIST before EXDEV). Identical content is that replay — delivered;
+    // a different object in the slot is a permanent collision (ids are
+    // unique, retrying can never resolve it). Any other link error
+    // (ENOSPC, EACCES) is transient — told apart by whether the
+    // destination actually exists.
+    if (!pathExists(dst))
+      return Delivery::Temporary;
+    return sameContent(src, dst) ? Delivery::Ok : Delivery::Permanent;
   case LinkOutcome::CrossDevice:
     break; // a cross-filesystem maildir: copy through its own tmp/
   }
