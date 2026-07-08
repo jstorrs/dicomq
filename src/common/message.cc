@@ -59,14 +59,23 @@ bool linkBatchTree(const std::string &srcParent, const std::string &dstParent,
   return fsyncPath(dst, err);
 }
 
-bool moveMessage(const std::string &fromDir, const std::string &toDir,
-                 const std::string &id, std::string &err, bool isBatch) {
+bool moveMessage(const Spool &sp, const std::string &fromDir,
+                 const std::string &toDir, const std::string &id,
+                 std::string &err, bool isBatch) {
   const std::string src = messagePath(fromDir, id, isBatch);
   const std::string dst = messagePath(toDir, id, isBatch);
   if (rename(src.c_str(), dst.c_str()) == 0)
     return fsyncPath(dirOf(dst), err) && fsyncPath(dirOf(src), err);
   if (errno == ENOENT && pathExists(dst))
     return true; // a prior pass already moved it
+  // A directory rename cannot clobber a non-empty target the way a file
+  // rename does. A crash between a demotion's link-tree and its discard
+  // leaves a batch on two rungs; both eventually head for the same sink,
+  // and the second arrival collides with the first. Ids are unique, so
+  // the resident batch is this same message: treat it as moved and
+  // discard the stranded source, or it would be re-processed forever.
+  if (isBatch && (errno == ENOTEMPTY || errno == EEXIST) && isDir(dst))
+    return discardMessage(sp, fromDir, id, true, err);
   err = "cannot rename '" + src + "' to '" + dst + "': " + strerror(errno);
   return false;
 }

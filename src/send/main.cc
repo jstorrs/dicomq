@@ -257,7 +257,7 @@ static void processMessage(const std::string &aet, const Message &msg) {
     // like every per-destination sink — without this an absent failed/ makes
     // the move ENOENT and the message re-fails every scan.
     if (!mkdirIfMissing(sp.failedDir(), err) ||
-        !moveMessage(srcDir, sp.failedDir(), id, err, batch))
+        !moveMessage(sp, srcDir, sp.failedDir(), id, err, batch))
       logmsg("cannot fail " + id + ": " + err);
     return;
   }
@@ -303,7 +303,7 @@ static void processMessage(const std::string &aet, const Message &msg) {
         // path above. dicomq-local logged the specific reason to stderr.
         logmsg("failing " + id + ": dicomq-local reported a permanent failure");
         if (!mkdirIfMissing(sp.failedDir(), err) ||
-            !moveMessage(srcDir, sp.failedDir(), id, err, batch))
+            !moveMessage(sp, srcDir, sp.failedDir(), id, err, batch))
           logmsg("cannot fail " + id + ": " + err);
         return;
       }

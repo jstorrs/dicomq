@@ -798,6 +798,27 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
   "$BIN/dicomq-ctl" fail "$DBATCH" "operator says no" >/dev/null
   check "study-mode: ctl fails a batch" test -d "$DICOMQ_SPOOL/failed/$DBATCH"
 
+  # sink collision: a crash between a demotion's link-tree and its discard
+  # leaves a batch on two rungs, and the second copy's arrival at a sink
+  # finds the first already there (a directory rename cannot clobber). The
+  # collision must count as sinked — discarding the source — not strand the
+  # batch to be re-forwarded forever.
+  mkdir -p "$DICOMQ_SPOOL/route/PACS1/todo/$DBATCH" \
+           "$DICOMQ_SPOOL/route/PACS1/complete/$DBATCH"
+  ln "$DICOMQ_SPOOL/failed/$DBATCH/"*.dcm "$DICOMQ_SPOOL/route/PACS1/todo/$DBATCH/"
+  ln "$DICOMQ_SPOOL/failed/$DBATCH/"*.dcm "$DICOMQ_SPOOL/route/PACS1/complete/$DBATCH/"
+  printf 'ExplicitVRLittleEndian\ntranscode: never\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  storescp -od "$WORK/studypacs2" $SPPORT 2>/dev/null & SCP=$!
+  require_listen $SPPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "study-mode: a sink collision dequeues the delivered batch" \
+        test ! -e "$DICOMQ_SPOOL/route/PACS1/todo/$DBATCH"
+  check "study-mode: the resident sink copy survives the collision" \
+        test "$(ndcm "$DICOMQ_SPOOL/route/PACS1/complete/$DBATCH")" = 2
+  check "study-mode: the collision leaves no trash residue" \
+        test -z "$(ls -A "$DICOMQ_SPOOL/trash" 2>/dev/null)"
+
   # a grouping AET refuses an object with no StudyInstanceUID
   new_spool
   mkdir -p "$DICOMQ_SPOOL/aet/STUDYR"/{tmp,new}

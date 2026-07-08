@@ -176,7 +176,7 @@ static void recordConnectionFailure(const std::string &reason) {
 static bool sinkMessage(const std::string &sinkDir, const std::string &fromDir,
                         const std::string &id, bool isBatch, std::string &err) {
   return mkdirIfMissing(sinkDir, err) &&
-         moveMessage(fromDir, sinkDir, id, err, isBatch);
+         moveMessage(sp, fromDir, sinkDir, id, err, isBatch);
 }
 
 // a destination rejected this message: climb one retry rung, or fail it
