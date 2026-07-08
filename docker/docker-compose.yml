@@ -1,0 +1,61 @@
+# A minimal dicomq deployment: a receiver, the queue runner, and a
+# periodic reaper — three of the suite's programs from one image, sharing
+# one spool volume (the spool must be a single filesystem; a named volume
+# is). Objects C-STOREd to the published port land in ./delivered/new/
+# on the host.
+#
+#   docker compose up --build
+#   storescu -aec ARCHIVE localhost 11112 image.dcm     # any DICOM node
+#   ls delivered/new/
+#
+# Configure with environment variables (or a .env file next to this):
+#
+#   DICOMQ_PORT  host port to listen on          (default 11112)
+#   DICOMQ_AET   called AE title that is accepted (default ARCHIVE)
+#
+# This is the small-site --listen shape from README "Run". Production
+# wants the systemd deployment (../systemd/): one recv process per
+# association under socket activation and two-user privilege separation,
+# neither of which this single-image example attempts.
+
+services:
+  recv:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: dicomq
+    command: ["dicomq-recv", "--listen", "11112"]
+    ports:
+      - "${DICOMQ_PORT:-11112}:11112"
+    environment:
+      DICOMQ_AET: "${DICOMQ_AET:-ARCHIVE}"
+      DICOMQ_DELIVER_DIR: /delivered
+    volumes:
+      - spool:/var/spool/dicomq
+      - ./delivered:/delivered
+    restart: unless-stopped
+
+  send:
+    image: dicomq
+    depends_on: [recv]        # reuse the image the recv service built
+    command: ["dicomq-send"]
+    environment:
+      DICOMQ_AET: "${DICOMQ_AET:-ARCHIVE}"
+      DICOMQ_DELIVER_DIR: /delivered
+    volumes:
+      - spool:/var/spool/dicomq
+      - ./delivered:/delivered
+    restart: unless-stopped
+
+  # qmail-clean analog: reap interrupted writes and aged complete/ entries
+  # (systemd/cron territory outside a container; a sleep loop here)
+  clean:
+    image: dicomq
+    depends_on: [recv]
+    command: ["sh", "-c", "while true; do dicomq-clean; sleep 3600; done"]
+    volumes:
+      - spool:/var/spool/dicomq
+    restart: unless-stopped
+
+volumes:
+  spool:

@@ -106,6 +106,26 @@ everything else (DESIGN.md "Process and privilege model"). If a
 would defer forever. Local submission and re-queueing use
 `dicomq-inject -c <aet> <file.dcm>...`.
 
+## Docker
+
+A minimal containerized deployment lives in [docker/](docker/) — a
+receiver, the queue runner, and the reaper sharing one spool volume,
+with deliveries landing in a bind-mounted host directory:
+
+```sh
+cd docker
+docker compose up --build          # first build compiles DCMTK 3.7.0
+storescu -aec ARCHIVE localhost 11112 image.dcm    # from any DICOM node
+ls delivered/new/                  # the delivered object
+```
+
+The listening port and accepted called AET are environment variables
+(`DICOMQ_PORT=104 DICOMQ_AET=PACS docker compose up`), and the
+container entrypoint seeds the spool idempotently — hand edits inside
+the volume (deliver files, `dest/` destinations, retry ladders)
+survive restarts. This is the small-site `--listen` shape; production
+wants the systemd socket-activated deployment above.
+
 ## TLS
 
 ```sh

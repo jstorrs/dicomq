@@ -1,0 +1,4 @@
+# keep host build trees and VCS metadata out of the image build context
+build/
+.git/
+docker/delivered/
