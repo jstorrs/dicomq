@@ -646,6 +646,25 @@ if command -v openssl >/dev/null && storescu --help 2>&1 | grep -q anonymous-tls
         storescu -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
   kill $RECV 2>/dev/null; wait $RECV 2>/dev/null
 
+  # ca.pem in <spool>/tls switches on client-certificate verification:
+  # an anonymous client must be refused, a CA-signed one accepted
+  openssl req -newkey rsa:2048 -keyout "$CERTS/cli.key" -out "$CERTS/cli.csr" \
+      -nodes -subj "/CN=dicomq-test-client" 2>/dev/null
+  openssl x509 -req -in "$CERTS/cli.csr" -CA "$CERTS/ca.pem" -CAkey "$CERTS/ca.key" \
+      -days 1 -out "$CERTS/cli.pem" 2>/dev/null
+  cp "$CERTS/ca.pem" "$DICOMQ_SPOOL/tls/ca.pem"
+  "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
+  require_listen $TPORT
+  check_not "recv with ca.pem refuses an anonymous client" \
+        storescu +tla +cf "$CERTS/ca.pem" -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
+  kill $RECV 2>/dev/null; wait $RECV 2>/dev/null
+  "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
+  require_listen $TPORT
+  check "recv with ca.pem accepts a CA-signed client certificate" \
+        storescu +tls "$CERTS/cli.key" "$CERTS/cli.pem" +cf "$CERTS/ca.pem" \
+                 -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
+  wait $RECV
+
   # remote speaks TLS when dest/<DEST>/tls/ exists
   new_spool
   mkdir -p "$DICOMQ_SPOOL/aet/FWD"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1/tls" \
@@ -663,6 +682,49 @@ if command -v openssl >/dev/null && storescu --help 2>&1 | grep -q anonymous-tls
   check "remote delivers over TLS"            test -n "$(ls -A "$WORK/tlspacs")"
   check "TLS route queue drained"             test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+
+  # remote must reject a server whose certificate does not chain to the
+  # destination's ca.pem — a wrong-CA peer is a connection failure
+  # (dead-site backoff), never a delivery
+  openssl req -x509 -newkey rsa:2048 -keyout "$CERTS/rogue.key" -out "$CERTS/rogue.pem" \
+      -days 1 -nodes -subj "/CN=localhost" 2>/dev/null
+  ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  storescp +tls "$CERTS/rogue.key" "$CERTS/rogue.pem" -ic -od "$WORK/tlspacs" $TPORT 2>/dev/null & SCP=$!
+  require_listen $TPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "remote rejects a server cert from the wrong CA" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
+  check "a wrong-CA peer counts as a connection failure (backoff)" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/status"
+
+  # a half-configured outbound identity (cert.pem, no key.pem) is a
+  # config error — never a silent anonymous connection
+  rm -f "$DICOMQ_SPOOL/route/PACS1/status"
+  cp "$CERTS/cli.pem" "$DICOMQ_SPOOL/dest/PACS1/tls/cert.pem"
+  storescp +tls "$CERTS/srv.key" "$CERTS/srv.pem" -ic -od "$WORK/tlspacs" $TPORT 2>/dev/null & SCP=$!
+  require_listen $TPORT
+  RERR=$("$BIN/dicomq-remote" PACS1 2>&1 >/dev/null)
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "a lone cert.pem refuses to connect (no silent anonymous TLS)" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
+  check "the half-configured identity is named in the error" \
+        grep -q "key.pem" <<<"$RERR"
+
+  # with the pair complete, remote authenticates to a server that
+  # requires a client certificate and delivers
+  cp "$CERTS/cli.key" "$DICOMQ_SPOOL/dest/PACS1/tls/key.pem"
+  rm -f "$DICOMQ_SPOOL/route/PACS1/status"
+  storescp +tls "$CERTS/srv.key" "$CERTS/srv.pem" +cf "$CERTS/ca.pem" -rc \
+           -od "$WORK/tlspacs" $TPORT 2>/dev/null & SCP=$!
+  require_listen $TPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "remote authenticates with a client certificate" \
+        test ! -e "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
 else
   echo "skip - TLS tests (no openssl or no TLS-enabled DCMTK)"
 fi

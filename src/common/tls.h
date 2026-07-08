@@ -23,9 +23,10 @@ namespace dicomq {
 //                        certificate is not checked.
 //   key.pem + cert.pem — our own identity. Loaded unconditionally when
 //                        requireOwnCert is true (an acceptor always presents a
-//                        certificate); otherwise loaded only when key.pem
-//                        exists (a requestor authenticates itself only if it
-//                        was configured to).
+//                        certificate); otherwise loaded only when present (a
+//                        requestor authenticates itself only if it was
+//                        configured to). Exactly one of the pair present is
+//                        an error, never a silent anonymous connection.
 //
 // role is NET_ACCEPTOR (recv) or NET_REQUESTOR (remote), from dcmnet. On
 // success returns the layer for the caller to hand to ASC_setTransportLayer
