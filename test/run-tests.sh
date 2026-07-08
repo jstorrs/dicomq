@@ -107,6 +107,7 @@ dump2dcm +te "$WORK/test2.dump" "$WORK/test2.dcm" 2>/dev/null \
 
 # --- inject ---------------------------------------------------------------
 new_spool
+mkdir -p "$DICOMQ_SPOOL/aet"/{ARCHIVE,X}/{tmp,new}
 ID=$("$BIN/dicomq-inject" -c ARCHIVE -a MOD1 "$WORK/test.dcm")
 DCM="$DICOMQ_SPOOL/queue/todo/ARCHIVE/$ID.dcm"
 check "inject returns an id"               test -n "$ID"
@@ -120,6 +121,9 @@ check "meta has the transfer syntax"       meta_has "$DCM" '0002,0010.*LittleEnd
 check "queue/tmp left empty"               test -z "$(ls -A "$DICOMQ_SPOOL/queue/tmp")"
 check_not "inject refuses a non-DICOM file" "$BIN/dicomq-inject" -c X "$WORK/test.dump"
 check_not "inject refuses a reserved called AET" "$BIN/dicomq-inject" -c tmp "$WORK/test.dcm"
+# the same gate recv applies at association time: a typoed filter re-injection
+# must be a visible submission error, not a later escalation to failed/
+check_not "inject refuses an unknown called AET" "$BIN/dicomq-inject" -c NOAETHERE "$WORK/test.dcm"
 
 # --- unit: pure common helpers --------------------------------------------
 if [ -x "$BIN/dicomq-unit-profile" ]; then
@@ -250,7 +254,11 @@ check "send respects hold flags (no agent spawned for held dest)" \
 
 # unknown AET, deferral (send opens no DICOM, so there is no corrupt path here)
 new_spool
-ID=$("$BIN/dicomq-inject" -c NOSUCHAET "$WORK/test.dcm")
+# recv and inject both gate the called AET, so an unknown-AET message can
+# only be hand-placed (DESIGN.md "Route") — stage one by hand
+ID=20990101000000000.1.000001
+mkdir -p "$DICOMQ_SPOOL/queue/todo/NOSUCHAET"
+cp "$WORK/test.dcm" "$DICOMQ_SPOOL/queue/todo/NOSUCHAET/$ID.dcm"
 mkdir -p "$DICOMQ_SPOOL/aet/DEFER"/{tmp,new}
 printf 'forward MISSINGDEST\n' > "$DICOMQ_SPOOL/aet/DEFER/deliver"
 ID2=$("$BIN/dicomq-inject" -c DEFER "$WORK/test.dcm")
@@ -264,7 +272,9 @@ check "unsatisfiable instruction defers in place" \
 # not strand send (re-failing every scan) or error out ctl.
 new_spool
 rm -rf "$DICOMQ_SPOOL/failed"
-ID=$("$BIN/dicomq-inject" -c UNKNOWNAET "$WORK/test.dcm")
+ID=20990101000000000.1.000002
+mkdir -p "$DICOMQ_SPOOL/queue/todo/UNKNOWNAET"
+cp "$WORK/test.dcm" "$DICOMQ_SPOOL/queue/todo/UNKNOWNAET/$ID.dcm"
 "$BIN/dicomq-send" --once 2>/dev/null
 check "send creates a missing failed/ to fail an unknown AET" \
       test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
@@ -276,6 +286,18 @@ rm -rf "$DICOMQ_SPOOL/failed"
 check "ctl fail creates a missing failed/" "$BIN/dicomq-ctl" fail "$ID"
 check "ctl fail landed the message in the recreated failed/" \
       test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+
+# a decommissioned destination — dest/<DEST>/ deleted with work still
+# queued — must not spawn a doomed dicomq-remote every scan, forever
+new_spool
+ID=20990101000000000.1.000003
+mkdir -p "$DICOMQ_SPOOL/route/GONE/todo"
+cp "$WORK/test.dcm" "$DICOMQ_SPOOL/route/GONE/todo/$ID.dcm"
+SERR=$("$BIN/dicomq-send" --once 2>&1 >/dev/null)
+check "send skips a destination with no dest/ configuration" \
+      grep -q "no dest/GONE" <<<"$SERR"
+check "the unconfigured destination's work stays queued" \
+      test -f "$DICOMQ_SPOOL/route/GONE/todo/$ID.dcm"
 
 # --- send: daemon mode reacts to new work via inotify ----------------------
 # inotify is Linux-only; elsewhere (e.g. macOS) dicomq-send falls back to the

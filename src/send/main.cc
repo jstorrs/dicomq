@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -353,6 +354,18 @@ static void maybeTrigger(const std::string &dest) {
     return;
   if (pathExists(sp.routeHoldFlag(dest)))
     return;
+
+  // a destination whose dest/<DEST>/ configuration is gone (decommissioned
+  // with messages still queued) has no agent to spawn: dicomq-remote would
+  // exit with a config error every scan, forever. Say so once, then leave
+  // the queued work for the operator to requeue or fail.
+  if (!isDir(sp.destDir(dest))) {
+    static std::set<std::string> reported;
+    if (reported.insert(dest).second)
+      logmsg("route/" + dest + " has queued work but no dest/" + dest +
+             "/ configuration; not spawning an agent");
+    return;
+  }
 
   if (readDestStatus(sp, dest).backedOff(time(nullptr)))
     return; // destination-level backoff (dead-site cache)

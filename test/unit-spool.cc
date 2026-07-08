@@ -15,6 +15,7 @@
 //
 // Exit 0 = all asserts held; 1 = a failure was printed.
 
+#include "common/kvfile.h"
 #include "common/message.h"
 #include "common/profile.h"
 #include "common/spool.h"
@@ -109,6 +110,26 @@ int main() {
                     dirs[3].second == 10 &&
                     dirs[3].first == sp.routeRetry(dest, 10);
     expect(ok, "routeQueueDirs sorts rungs numerically, dropping malformed");
+  }
+
+  // --- KeyValueFile keeps values one line ------------------------------
+  // an embedded newline (a peer-influenced failure reason, say) would make
+  // the file unreadable on the next read — readDestStatus then fails open
+  // as "no backoff" — or inject a forged field outright
+  {
+    const std::string kvPath = root + "/kv-status";
+    KeyValueFile kv;
+    kv.add("last-failure", "refused\nnext-attempt-after: 1");
+    err.clear();
+    expect(kv.write(kvPath, err), "kvfile writes a newline-bearing value");
+    KeyValueFile back;
+    err.clear();
+    expect(KeyValueFile::read(kvPath, back, err),
+           "kvfile reads its own output back");
+    expect(back.get("last-failure") == "refused next-attempt-after: 1",
+           "an embedded newline is flattened to a space");
+    expect(back.get("next-attempt-after").empty(),
+           "a newline cannot forge a field");
   }
 
   // --- copyFile is all-or-nothing -------------------------------------

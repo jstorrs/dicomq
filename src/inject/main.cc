@@ -76,6 +76,15 @@ int main(int argc, char **argv) {
   const Spool sp(spoolArg);
   std::string err;
 
+  // recv rejects an unknown called AET at association time — the
+  // unknown-recipient error happens at "RCPT TO" (DESIGN.md). Apply the
+  // same gate at submission: without it a filter's typoed -c enqueues
+  // every object only for dicomq-send to escalate them to failed/.
+  if (!isDir(sp.aetDir(dest))) {
+    logmsg("unknown called AET '" + calledAET + "' (no aet/" + dest + "/)");
+    return 100;
+  }
+
   for (int i = optind; i < argc; i++) {
     const char *file = argv[i];
 
