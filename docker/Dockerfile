@@ -51,6 +51,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/dicomq/bin/ /usr/local/bin/
+# the statically linked DCMTK still loads its data dictionary (and
+# oficonv's character-set tables) from the install prefix at runtime —
+# without this every program fails with "Data dictionary missing"
+COPY --from=build /opt/dcmtk/share/ /opt/dcmtk/share/
 COPY docker/entrypoint.sh /usr/local/bin/dicomq-entrypoint
 
 ENV DICOMQ_SPOOL=/var/spool/dicomq
