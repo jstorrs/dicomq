@@ -155,7 +155,7 @@ int main(int argc, char **argv) {
       logmsg(err);
       return 111;
     }
-    if (!moveMessage(fromDir, toDir, id, err, isBatch)) {
+    if (!moveMessage(sp, fromDir, toDir, id, err, isBatch)) {
       logmsg(err);
       return 111;
     }
@@ -174,7 +174,7 @@ int main(int argc, char **argv) {
       logmsg(err);
       return 111;
     }
-    if (!moveMessage(fromDir, toDir, id, err, isBatch)) {
+    if (!moveMessage(sp, fromDir, toDir, id, err, isBatch)) {
       logmsg(err);
       return 111;
     }
@@ -193,7 +193,7 @@ int main(int argc, char **argv) {
     if (from == "queue/todo/" + aet)
       return 0; // idempotent
     if (!mkdirIfMissing(toDir, err) ||
-        !moveMessage(fromDir, toDir, id, err, isBatch)) {
+        !moveMessage(sp, fromDir, toDir, id, err, isBatch)) {
       logmsg(err);
       return 111;
     }
@@ -211,7 +211,7 @@ int main(int argc, char **argv) {
     // create failed/ on first use, like the per-destination sinks (DESIGN.md
     // "Spool layout" lists the global failed/ as dicomq's to write)
     if (!mkdirIfMissing(sp.failedDir(), err) ||
-        !moveMessage(fromDir, sp.failedDir(), id, err, isBatch)) {
+        !moveMessage(sp, fromDir, sp.failedDir(), id, err, isBatch)) {
       logmsg(err);
       return 111;
     }

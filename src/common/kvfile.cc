@@ -63,8 +63,17 @@ bool KeyValueFile::write(const std::string &path, std::string &err) const {
     err = "cannot create '" + path + "': " + strerror(errno);
     return false;
   }
-  for (const auto &f : fields)
-    out << f.first << ": " << f.second << '\n';
+  for (const auto &f : fields) {
+    // a value must stay one line: an embedded newline (a peer-influenced
+    // failure reason, say) would make the file unreadable on the next
+    // read — and an unreadable status file fails open as "no backoff" —
+    // or worse, inject a forged field
+    std::string value = f.second;
+    for (char &c : value)
+      if (c == '\n' || c == '\r')
+        c = ' ';
+    out << f.first << ": " << value << '\n';
+  }
   out.close();
   if (!out) {
     err = "write error on '" + path + "'";

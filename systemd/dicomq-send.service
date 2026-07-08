@@ -1,6 +1,7 @@
 [Unit]
 Description=dicomq queue runner
 After=network.target
+RequiresMountsFor=/var/spool/dicomq
 
 [Service]
 ExecStart=/usr/local/bin/dicomq-send
@@ -9,6 +10,8 @@ RestartSec=5
 Environment=DICOMQ_SPOOL=/var/spool/dicomq
 User=dicomq
 Group=dicomq
+# delivering to a maildir outside the spool? list its path here too, or
+# ProtectSystem=strict defers that delivery forever
 ReadWritePaths=/var/spool/dicomq
 ProtectSystem=strict
 PrivateTmp=yes

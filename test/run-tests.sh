@@ -107,6 +107,7 @@ dump2dcm +te "$WORK/test2.dump" "$WORK/test2.dcm" 2>/dev/null \
 
 # --- inject ---------------------------------------------------------------
 new_spool
+mkdir -p "$DICOMQ_SPOOL/aet"/{ARCHIVE,X}/{tmp,new}
 ID=$("$BIN/dicomq-inject" -c ARCHIVE -a MOD1 "$WORK/test.dcm")
 DCM="$DICOMQ_SPOOL/queue/todo/ARCHIVE/$ID.dcm"
 check "inject returns an id"               test -n "$ID"
@@ -120,6 +121,9 @@ check "meta has the transfer syntax"       meta_has "$DCM" '0002,0010.*LittleEnd
 check "queue/tmp left empty"               test -z "$(ls -A "$DICOMQ_SPOOL/queue/tmp")"
 check_not "inject refuses a non-DICOM file" "$BIN/dicomq-inject" -c X "$WORK/test.dump"
 check_not "inject refuses a reserved called AET" "$BIN/dicomq-inject" -c tmp "$WORK/test.dcm"
+# the same gate recv applies at association time: a typoed filter re-injection
+# must be a visible submission error, not a later escalation to failed/
+check_not "inject refuses an unknown called AET" "$BIN/dicomq-inject" -c NOAETHERE "$WORK/test.dcm"
 
 # --- unit: pure common helpers --------------------------------------------
 if [ -x "$BIN/dicomq-unit-profile" ]; then
@@ -184,6 +188,13 @@ echo "a different object" > "$MD/new/COLLIDE.dcm"
 check "local reports a wrong-object collision as permanent (exit 100)" \
       test "$rc" = 100
 rm -f "$MD/new/COLLIDE.dcm" "$SRC/COLLIDE.dcm"
+# ...but a byte-identical slot under a different inode is a crash-replayed
+# cross-filesystem copy delivery, not a collision: delivered, exit 0
+cp "$WORK/test.dcm" "$SRC/REPLAY.dcm"
+cp "$SRC/REPLAY.dcm" "$MD/new/REPLAY.dcm"
+check "local treats an identical-copy slot as delivered" \
+      "$BIN/dicomq-local" REPLAY "$MD" "$SRC"
+rm -f "$MD/new/REPLAY.dcm" "$SRC/REPLAY.dcm"
 # cross-filesystem fallback: /dev/shm is a different fs from /tmp
 if [ -d /dev/shm ] && [ "$(stat -fc %i /dev/shm 2>/dev/null)" != "$(stat -fc %i "$WORK" 2>/dev/null)" ]; then
   XMD=$(mktemp -d /dev/shm/dicomq-md.XXXXXX); mkdir -p "$XMD"/{tmp,new}
@@ -212,6 +223,17 @@ check "permanent local failure escalates to failed/" \
 check "permanent local failure dequeues from todo" \
       test ! -e "$DICOMQ_SPOOL/queue/todo/COLL/$ID.dcm"
 
+# a byte-identical copy in the slot (a crash-replayed cross-fs delivery)
+# is a completed delivery: send dequeues it, nothing escalates
+new_spool
+mkdir -p "$DICOMQ_SPOOL/aet/COLL"/{tmp,new}
+ID=$("$BIN/dicomq-inject" -c COLL "$WORK/test.dcm")
+cp "$DICOMQ_SPOOL/queue/todo/COLL/$ID.dcm" "$DICOMQ_SPOOL/aet/COLL/new/$ID.dcm"
+"$BIN/dicomq-send" --once 2>/dev/null
+check "replayed copy delivery dequeues without escalating" \
+      test ! -e "$DICOMQ_SPOOL/queue/todo/COLL/$ID.dcm" -a \
+           ! -e "$DICOMQ_SPOOL/failed/$ID.dcm"
+
 # fan-out: maildir + two forwards
 new_spool
 mkdir -p "$DICOMQ_SPOOL/aet/FAN"/{tmp,new} "$DICOMQ_SPOOL/dest"/{PACS1,PACS2} \
@@ -232,7 +254,11 @@ check "send respects hold flags (no agent spawned for held dest)" \
 
 # unknown AET, deferral (send opens no DICOM, so there is no corrupt path here)
 new_spool
-ID=$("$BIN/dicomq-inject" -c NOSUCHAET "$WORK/test.dcm")
+# recv and inject both gate the called AET, so an unknown-AET message can
+# only be hand-placed (DESIGN.md "Route") — stage one by hand
+ID=20990101000000000.1.000001
+mkdir -p "$DICOMQ_SPOOL/queue/todo/NOSUCHAET"
+cp "$WORK/test.dcm" "$DICOMQ_SPOOL/queue/todo/NOSUCHAET/$ID.dcm"
 mkdir -p "$DICOMQ_SPOOL/aet/DEFER"/{tmp,new}
 printf 'forward MISSINGDEST\n' > "$DICOMQ_SPOOL/aet/DEFER/deliver"
 ID2=$("$BIN/dicomq-inject" -c DEFER "$WORK/test.dcm")
@@ -246,7 +272,9 @@ check "unsatisfiable instruction defers in place" \
 # not strand send (re-failing every scan) or error out ctl.
 new_spool
 rm -rf "$DICOMQ_SPOOL/failed"
-ID=$("$BIN/dicomq-inject" -c UNKNOWNAET "$WORK/test.dcm")
+ID=20990101000000000.1.000002
+mkdir -p "$DICOMQ_SPOOL/queue/todo/UNKNOWNAET"
+cp "$WORK/test.dcm" "$DICOMQ_SPOOL/queue/todo/UNKNOWNAET/$ID.dcm"
 "$BIN/dicomq-send" --once 2>/dev/null
 check "send creates a missing failed/ to fail an unknown AET" \
       test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
@@ -258,6 +286,18 @@ rm -rf "$DICOMQ_SPOOL/failed"
 check "ctl fail creates a missing failed/" "$BIN/dicomq-ctl" fail "$ID"
 check "ctl fail landed the message in the recreated failed/" \
       test -f "$DICOMQ_SPOOL/failed/$ID.dcm"
+
+# a decommissioned destination — dest/<DEST>/ deleted with work still
+# queued — must not spawn a doomed dicomq-remote every scan, forever
+new_spool
+ID=20990101000000000.1.000003
+mkdir -p "$DICOMQ_SPOOL/route/GONE/todo"
+cp "$WORK/test.dcm" "$DICOMQ_SPOOL/route/GONE/todo/$ID.dcm"
+SERR=$("$BIN/dicomq-send" --once 2>&1 >/dev/null)
+check "send skips a destination with no dest/ configuration" \
+      grep -q "no dest/GONE" <<<"$SERR"
+check "the unconfigured destination's work stays queued" \
+      test -f "$DICOMQ_SPOOL/route/GONE/todo/$ID.dcm"
 
 # --- send: daemon mode reacts to new work via inotify ----------------------
 # inotify is Linux-only; elsewhere (e.g. macOS) dicomq-send falls back to the
@@ -386,8 +426,70 @@ if command -v storescu >/dev/null; then
   check_not "accept profile refuses excluded syntaxes" \
         storescu -xi -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
   wait $RECV
+
+  # no accept file: the compiled-in default accepts every standard syntax
+  # (uncompressed preferred), so a compressed-only proposer can still store
+  if command -v dcmcjpls >/dev/null; then
+    rm "$DICOMQ_SPOOL/aet/ARCHIVE/accept"
+    dcmcjpls "$WORK/test.dcm" "$WORK/test-jls.dcm" 2>/dev/null
+    cat > "$WORK/jls-only.cfg" <<'EOF'
+[[TransferSyntaxes]]
+[JLSOnly]
+TransferSyntax1 = 1.2.840.10008.1.2.4.80
+
+[[PresentationContexts]]
+[JLSContext]
+PresentationContext1 = 1.2.840.10008.5.1.4.1.1.7\JLSOnly
+
+[[Profiles]]
+[JLS]
+PresentationContexts = JLSContext
+EOF
+    "$BIN/dicomq-recv" --listen $PORT --once 2>/dev/null &
+    RECV=$!; require_listen $PORT
+    check "default accept profile takes a compressed-only proposal" \
+          storescu -xf "$WORK/jls-only.cfg" JLS -aet MOD1 -aec ARCHIVE \
+                   localhost $PORT "$WORK/test-jls.dcm"
+    wait $RECV
+    JLSDCM="$DICOMQ_SPOOL/queue/todo/ARCHIVE/$(ls "$DICOMQ_SPOOL/queue/todo/ARCHIVE" | sort | tail -1)"
+    check "compressed object is queued as received" \
+          meta_has "$JLSDCM" '0002,0010.*JPEGLSLossless'
+  else
+    echo "skip - compressed-only default-profile leg (no dcmcjpls on PATH)"
+  fi
 else
   echo "skip - recv tests (no storescu on PATH)"
+fi
+
+# --- recv supervisor mode: the connected socket arrives on fd 0 -----------
+# The production entry path — systemd Accept=yes and launchd's inetd mode
+# hand dicomq-recv a connected socket as stdin; every other leg here uses
+# --listen. The wrapper below does exactly what those supervisors do:
+# accept one connection, dup it to fd 0, exec dicomq-recv.
+if command -v storescu >/dev/null && command -v python3 >/dev/null; then
+  PORT=11189
+  new_spool
+  mkdir -p "$DICOMQ_SPOOL/aet/ARCHIVE"/{tmp,new}
+  python3 - "$BIN/dicomq-recv" $PORT <<'EOF' 2>/dev/null &
+import os, socket, sys
+prog, port = sys.argv[1], int(sys.argv[2])
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(1)
+conn, _ = s.accept()
+os.dup2(conn.fileno(), 0)
+os.execv(prog, [prog])
+EOF
+  SUP=$!
+  require_listen $PORT
+  check "supervisor mode: recv accepts a store on fd 0" \
+        storescu -aet MOD1 -aec ARCHIVE localhost $PORT "$WORK/test.dcm"
+  wait $SUP
+  check "supervisor mode: the object is committed by AET" \
+        test -n "$(ls -A "$DICOMQ_SPOOL/queue/todo/ARCHIVE" 2>/dev/null)"
+else
+  echo "skip - supervisor-mode test (needs storescu and python3)"
 fi
 
 # --- remote (needs storescp on PATH) ---------------------------------------
@@ -597,6 +699,25 @@ if command -v openssl >/dev/null && storescu --help 2>&1 | grep -q anonymous-tls
         storescu -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
   kill $RECV 2>/dev/null; wait $RECV 2>/dev/null
 
+  # ca.pem in <spool>/tls switches on client-certificate verification:
+  # an anonymous client must be refused, a CA-signed one accepted
+  openssl req -newkey rsa:2048 -keyout "$CERTS/cli.key" -out "$CERTS/cli.csr" \
+      -nodes -subj "/CN=dicomq-test-client" 2>/dev/null
+  openssl x509 -req -in "$CERTS/cli.csr" -CA "$CERTS/ca.pem" -CAkey "$CERTS/ca.key" \
+      -days 1 -out "$CERTS/cli.pem" 2>/dev/null
+  cp "$CERTS/ca.pem" "$DICOMQ_SPOOL/tls/ca.pem"
+  "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
+  require_listen $TPORT
+  check_not "recv with ca.pem refuses an anonymous client" \
+        storescu +tla +cf "$CERTS/ca.pem" -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
+  kill $RECV 2>/dev/null; wait $RECV 2>/dev/null
+  "$BIN/dicomq-recv" --listen $TPORT --once --tls 2>/dev/null & RECV=$!
+  require_listen $TPORT
+  check "recv with ca.pem accepts a CA-signed client certificate" \
+        storescu +tls "$CERTS/cli.key" "$CERTS/cli.pem" +cf "$CERTS/ca.pem" \
+                 -aet MOD1 -aec ARCHIVE localhost $TPORT "$WORK/test.dcm"
+  wait $RECV
+
   # remote speaks TLS when dest/<DEST>/tls/ exists
   new_spool
   mkdir -p "$DICOMQ_SPOOL/aet/FWD"/{tmp,new} "$DICOMQ_SPOOL/dest/PACS1/tls" \
@@ -614,6 +735,49 @@ if command -v openssl >/dev/null && storescu --help 2>&1 | grep -q anonymous-tls
   check "remote delivers over TLS"            test -n "$(ls -A "$WORK/tlspacs")"
   check "TLS route queue drained"             test -z "$(ls -A "$DICOMQ_SPOOL/route/PACS1/todo")"
   kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+
+  # remote must reject a server whose certificate does not chain to the
+  # destination's ca.pem — a wrong-CA peer is a connection failure
+  # (dead-site backoff), never a delivery
+  openssl req -x509 -newkey rsa:2048 -keyout "$CERTS/rogue.key" -out "$CERTS/rogue.pem" \
+      -days 1 -nodes -subj "/CN=localhost" 2>/dev/null
+  ID=$("$BIN/dicomq-inject" -c FWD "$WORK/test.dcm")
+  touch "$DICOMQ_SPOOL/route/PACS1/hold"
+  "$BIN/dicomq-send" --once 2>/dev/null
+  rm "$DICOMQ_SPOOL/route/PACS1/hold"
+  storescp +tls "$CERTS/rogue.key" "$CERTS/rogue.pem" -ic -od "$WORK/tlspacs" $TPORT 2>/dev/null & SCP=$!
+  require_listen $TPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "remote rejects a server cert from the wrong CA" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
+  check "a wrong-CA peer counts as a connection failure (backoff)" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/status"
+
+  # a half-configured outbound identity (cert.pem, no key.pem) is a
+  # config error — never a silent anonymous connection
+  rm -f "$DICOMQ_SPOOL/route/PACS1/status"
+  cp "$CERTS/cli.pem" "$DICOMQ_SPOOL/dest/PACS1/tls/cert.pem"
+  storescp +tls "$CERTS/srv.key" "$CERTS/srv.pem" -ic -od "$WORK/tlspacs" $TPORT 2>/dev/null & SCP=$!
+  require_listen $TPORT
+  RERR=$("$BIN/dicomq-remote" PACS1 2>&1 >/dev/null)
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "a lone cert.pem refuses to connect (no silent anonymous TLS)" \
+        test -f "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
+  check "the half-configured identity is named in the error" \
+        grep -q "key.pem" <<<"$RERR"
+
+  # with the pair complete, remote authenticates to a server that
+  # requires a client certificate and delivers
+  cp "$CERTS/cli.key" "$DICOMQ_SPOOL/dest/PACS1/tls/key.pem"
+  rm -f "$DICOMQ_SPOOL/route/PACS1/status"
+  storescp +tls "$CERTS/srv.key" "$CERTS/srv.pem" +cf "$CERTS/ca.pem" -rc \
+           -od "$WORK/tlspacs" $TPORT 2>/dev/null & SCP=$!
+  require_listen $TPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "remote authenticates with a client certificate" \
+        test ! -e "$DICOMQ_SPOOL/route/PACS1/todo/$ID.dcm"
 else
   echo "skip - TLS tests (no openssl or no TLS-enabled DCMTK)"
 fi
@@ -766,6 +930,48 @@ if command -v storescu >/dev/null && command -v storescp >/dev/null; then
         test -d "$DICOMQ_SPOOL/queue/todo/STUDYR/$DBATCH"
   "$BIN/dicomq-ctl" fail "$DBATCH" "operator says no" >/dev/null
   check "study-mode: ctl fails a batch" test -d "$DICOMQ_SPOOL/failed/$DBATCH"
+
+  # sink collision: a crash between a demotion's link-tree and its discard
+  # leaves a batch on two rungs, and the second copy's arrival at a sink
+  # finds the first already there (a directory rename cannot clobber). The
+  # collision must count as sinked — discarding the source — not strand the
+  # batch to be re-forwarded forever.
+  mkdir -p "$DICOMQ_SPOOL/route/PACS1/todo/$DBATCH" \
+           "$DICOMQ_SPOOL/route/PACS1/complete/$DBATCH"
+  ln "$DICOMQ_SPOOL/failed/$DBATCH/"*.dcm "$DICOMQ_SPOOL/route/PACS1/todo/$DBATCH/"
+  ln "$DICOMQ_SPOOL/failed/$DBATCH/"*.dcm "$DICOMQ_SPOOL/route/PACS1/complete/$DBATCH/"
+  printf 'ExplicitVRLittleEndian\ntranscode: never\n' > "$DICOMQ_SPOOL/dest/PACS1/propose"
+  storescp -od "$WORK/studypacs2" $SPPORT 2>/dev/null & SCP=$!
+  require_listen $SPPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "study-mode: a sink collision dequeues the delivered batch" \
+        test ! -e "$DICOMQ_SPOOL/route/PACS1/todo/$DBATCH"
+  check "study-mode: the resident sink copy survives the collision" \
+        test "$(ndcm "$DICOMQ_SPOOL/route/PACS1/complete/$DBATCH")" = 2
+  check "study-mode: the collision leaves no trash residue" \
+        test -z "$(ls -A "$DICOMQ_SPOOL/trash" 2>/dev/null)"
+
+  # a batch link-tree is staged under a dot-name and published atomically:
+  # a stage (a fan-out or demotion a crash interrupted) must be invisible
+  # to the queue walkers — a half-linked tree delivered as a message would
+  # be a shrunken study — and clean reaps it once aged
+  STAGE="$DICOMQ_SPOOL/route/PACS1/todo/.20990101000000000.1.000000.stage"
+  mkdir -p "$STAGE"
+  ln "$DICOMQ_SPOOL/failed/$DBATCH/"*.dcm "$STAGE/"
+  check "study-mode: a staged tree is invisible to dicomq-queue" \
+        sh -c "! '$BIN/dicomq-queue' PACS1 | grep -q stage"
+  storescp -od "$WORK/studypacs2" $SPPORT 2>/dev/null & SCP=$!
+  require_listen $SPPORT
+  "$BIN/dicomq-remote" PACS1 2>/dev/null
+  kill $SCP 2>/dev/null; wait $SCP 2>/dev/null
+  check "study-mode: a staged tree is not forwarded" \
+        test -d "$STAGE" -a ! -e "$DICOMQ_SPOOL/route/PACS1/complete/.20990101000000000.1.000000.stage"
+  "$BIN/dicomq-clean" >/dev/null
+  check "study-mode: clean spares a fresh stage" test -d "$STAGE"
+  age_out "$STAGE"
+  "$BIN/dicomq-clean" >/dev/null
+  check "study-mode: clean reaps an aged stage" test ! -e "$STAGE"
 
   # a grouping AET refuses an object with no StudyInstanceUID
   new_spool

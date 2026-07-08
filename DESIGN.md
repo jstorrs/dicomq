@@ -424,9 +424,10 @@ Both halves hang off the directory they describe.
 **Inbound — `aet/<AET>/accept`.** Read by `dicomq-recv` when the
 A-ASSOCIATE-RQ arrives (the called AET is known before presentation
 contexts are accepted). Lines are transfer syntax UIDs or DCMTK names in
-preference order; first line of `*` means accept-all with proposer's
-preference. No file ⇒ a compiled-in default (uncompressed preferred,
-all standard syntaxes accepted). Example:
+preference order; first line of `*` means accept-all (the receiver still
+chooses its preferred syntax among those proposed, compressed first). No
+file ⇒ a compiled-in default (uncompressed preferred, all standard
+syntaxes accepted). Example:
 
 ```
 # archive prefers lossless compression, refuses lossy

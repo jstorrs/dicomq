@@ -8,7 +8,7 @@ SPOOL="$HOME/Library/Application Support/dicomq"
 AGENTS="$HOME/Library/LaunchAgents"
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-mkdir -p "$SPOOL/queue/tmp" "$SPOOL/queue/todo" \
+mkdir -p "$SPOOL/queue/tmp" "$SPOOL/queue/todo" "$SPOOL/accum" \
          "$SPOOL/route" "$SPOOL/aet" "$SPOOL/dest" \
          "$SPOOL/failed" "$SPOOL/hold"
 mkdir -p "$AGENTS" "$HOME/Library/Logs"

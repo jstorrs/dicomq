@@ -43,7 +43,10 @@ std::vector<Message> listMessages(const std::string &dir);
 // Recursively hardlink batch <id>/ from srcParent into a fresh directory
 // <id>/ under dstParent: the new directory gets its own mtime (a private
 // retry-backoff clock) while the member objects share inodes (fan-out and
-// copy-on-demote cost no data copy). Idempotent (EEXIST tolerated).
+// copy-on-demote cost no data copy). The tree is staged under a dot-name
+// the queue walkers skip and published by one atomic rename, so a partial
+// tree is never visible as a message. Idempotent (an existing <id>/ under
+// dstParent means a prior pass published it).
 bool linkBatchTree(const std::string &srcParent, const std::string &dstParent,
                    const std::string &id, std::string &err);
 
@@ -51,9 +54,14 @@ bool linkBatchTree(const std::string &srcParent, const std::string &dstParent,
 // file (isBatch=false) or a directory (isBatch=true), both atomic, so the
 // message exists in exactly one directory at every instant. Idempotent:
 // if the source is already gone but the target exists, a prior (possibly
-// crashed) pass did this — success.
-bool moveMessage(const std::string &fromDir, const std::string &toDir,
-                 const std::string &id, std::string &err, bool isBatch = false);
+// crashed) pass did this — success. A batch rename cannot clobber an
+// existing non-empty <id>/ at the target (ENOTEMPTY, where a file rename
+// silently replaces); ids are unique, so the resident batch is this same
+// message and the stranded source is discarded (via sp's trash/) instead
+// of being re-processed forever.
+bool moveMessage(const Spool &sp, const std::string &fromDir,
+                 const std::string &toDir, const std::string &id,
+                 std::string &err, bool isBatch = false);
 
 // Fan-out <id> from fromDir into toDir, leaving the source in place: a
 // hardlink for a file, a recursive hardlink-tree for a batch. EEXIST

@@ -13,6 +13,12 @@ find_package(DCMTK 3.7.0 REQUIRED CONFIG)
 include(GNUInstallDirs)   # provides CMAKE_INSTALL_BINDIR used by install()
 enable_testing()
 
+# Default to an optimized build: with CMAKE_BUILD_TYPE unset, single-config
+# generators build -O0 — and the CI artifact would ship exactly that.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "build type (defaulted)" FORCE)
+endif()
+
 # Emit build/compile_commands.json so clang-tidy and clangd know each
 # file's flags (see .clang-tidy). Warnings are dicomq's first-line linter;
 # kept advisory (no -Werror) so a new compiler's warnings never block a

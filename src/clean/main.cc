@@ -8,7 +8,9 @@
 // Removes queue/tmp/ entries older than -g (default 36 hours): interrupted
 // receive/inject/transcode writes that never committed. A committed message
 // is a single <id>.dcm placed by one atomic rename, so the queues never hold
-// half-written objects and there are no sidecar orphans to reap.
+// half-written objects and there are no sidecar orphans to reap. Batch
+// link-tree stages a crash orphaned in the route queues age out on the
+// same grace.
 //
 // Also reaps route/<DEST>/complete/ — messages a destination's queue runner
 // finished forwarding and moved aside — once their message-id timestamp is
@@ -91,6 +93,35 @@ static void reapComplete(const Spool &sp, time_t completeCutoff) {
   }
 }
 
+// Reap batch link-tree stages (".<id>.stage", see linkBatchTree) that a
+// crash orphaned in a route todo/ or retry rung. A live pass rebuilds and
+// publishes its stage within seconds, so anything older than the tmp grace
+// is a leftover; until reaped it pins its member objects' inodes.
+static void cleanStages(const Spool &sp) {
+  for (const auto &dest : listSubdirs(sp.routeRoot())) {
+    for (const auto &[dir, level] : routeQueueDirs(sp, dest)) {
+      (void)level;
+      std::error_code ec;
+      for (const auto &entry : fs::directory_iterator(dir, ec)) {
+        const std::string name = entry.path().filename().string();
+        std::error_code dec;
+        if (name.rfind('.', 0) != 0 || !entry.is_directory(dec))
+          continue;
+        const std::string p = entry.path().string();
+        if (!olderThanCutoff(p))
+          continue;
+        std::error_code rec;
+        const auto n = fs::remove_all(p, rec);
+        if (rec) {
+          logmsg("cannot remove '" + p + "': " + rec.message());
+          problems++;
+        } else if (n > 0)
+          std::printf("removed %s\n", p.c_str());
+      }
+    }
+  }
+}
+
 // Reap trash/: a batch that a discard renamed aside but a crash left
 // undeleted (the normal case deletes it inline). Each entry is already
 // dequeued, so remove it unconditionally — no grace. Errors are ignored:
@@ -152,6 +183,7 @@ int main(int argc, char **argv) {
   cutoff = now - graceHours * 3600;
 
   cleanTmp(sp.queueTmp());
+  cleanStages(sp);
   reapComplete(sp, now - completeGraceHours * 3600);
   reapTrash(sp);
 

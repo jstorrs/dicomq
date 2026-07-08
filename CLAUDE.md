@@ -52,10 +52,11 @@ Three workflows, all on push / PR / manual dispatch:
 - **`macos.yml`** — `macos-14` (arm64). Full build + `ctest`, clang-tidy
   with `--warnings-as-errors`, then bundles dylibs into a self-contained
   artifact. DCMTK comes from Homebrew.
-- **`linux.yml`** — `ubuntu-latest`. Builds DCMTK from source, then full
-  build + `ctest`. This is the only job that exercises the Linux-only
-  `inotify` scan path in `dicomq-send` (macOS falls back to periodic
-  scanning).
+- **`linux.yml`** — `ubuntu-latest`. Builds DCMTK from source, runs
+  clang-tidy (the `uvx clang-tidy@21.1.6` wheel — the only job that
+  statically analyzes the Linux-only `inotify` code), then full build +
+  `ctest`. It is also the only job that exercises that inotify scan path
+  in `dicomq-send` at runtime (macOS falls back to periodic scanning).
 
 ### Non-obvious CI facts (read before editing the workflows)
 
